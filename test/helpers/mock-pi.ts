@@ -109,13 +109,18 @@ export function mockCtx(cwd = process.cwd()) {
  * persisting (`pi --no-session`, `SessionManager.inMemory()`) reports a session ID
  * but no file. Pass `{ persisted: false }` for the latter.
  */
-export function mockSessionCtx(sessionId: string, opts?: { persisted?: boolean; cwd?: string }) {
-  const sessionFile = opts?.persisted === false ? undefined : `/sessions/${sessionId}.jsonl`;
+export function mockSessionCtx(
+  sessionId: string,
+  opts?: { persisted?: boolean; cwd?: string; sessionDir?: string },
+) {
+  const sessionDir = opts?.sessionDir ?? "/sessions";
+  const sessionFile = opts?.persisted === false ? undefined : `${sessionDir}/${sessionId}.jsonl`;
   return {
     ...mockCtx(opts?.cwd),
     sessionManager: {
       getSessionId: vi.fn(() => sessionId),
       getSessionFile: vi.fn(() => sessionFile),
+      getSessionDir: vi.fn(() => sessionDir),
     },
   };
 }

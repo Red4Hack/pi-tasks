@@ -358,6 +358,40 @@ describe("TaskStore (in-memory)", () => {
     expect(sorted.map(t => t.id)).toEqual(["1", "4", "3", "2"]);
     expect(sorted.map(t => t.status)).toEqual(["pending", "pending", "in_progress", "completed"]);
   });
+
+  it("createMany numbers a batch in the order it was given", () => {
+    const created = store.createMany([
+      { subject: "First", description: "d" },
+      { subject: "Second", description: "d" },
+      { subject: "Third", description: "d" },
+    ]);
+
+    expect(created.map(t => t.id)).toEqual(["1", "2", "3"]);
+    expect(store.list().map(t => t.subject)).toEqual(["First", "Second", "Third"]);
+  });
+
+  it("createMany continues the ID counter from earlier tasks", () => {
+    store.create("Existing", "d");
+
+    expect(store.createMany([{ subject: "Batched", description: "d" }])[0].id).toBe("2");
+  });
+
+  it("createMany carries the optional fields through per task", () => {
+    const [plain, detailed] = store.createMany([
+      { subject: "Plain", description: "d" },
+      { subject: "Detailed", description: "d", activeForm: "Doing it", metadata: { agentType: "Explore" } },
+    ]);
+
+    expect(plain.activeForm).toBeUndefined();
+    expect(plain.metadata).toEqual({});
+    expect(detailed.activeForm).toBe("Doing it");
+    expect(detailed.metadata).toEqual({ agentType: "Explore" });
+  });
+
+  it("createMany on an empty batch is a no-op", () => {
+    expect(store.createMany([])).toEqual([]);
+    expect(store.list()).toEqual([]);
+  });
 });
 
 describe("TaskStore (file-backed)", () => {

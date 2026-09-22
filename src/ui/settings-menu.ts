@@ -9,7 +9,7 @@
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList, Spacer, Text } from "@earendil-works/pi-tui";
 import { BUILT_IN_SORT_ORDERS } from "../task-sort.js";
-import { saveTasksConfig, type TasksConfig } from "../tasks-config.js";
+import { DEFAULT_TASK_SCOPE, saveTasksConfig, type TasksConfig } from "../tasks-config.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -39,11 +39,12 @@ export async function openSettingsMenu(
         label: "Task storage",
         description:
           "memory: tasks live only in memory, lost when session ends. " +
-          "session: persisted per session in the workspace (.pi/tasks/tasks-<sessionId>.json), survives resume. " +
-          "session-global: same, but kept outside the workspace under pi's agent directory. " +
-          "project: shared across all sessions (tasks.json). " +
+          "session-global (default): persisted per session under pi's agent directory, survives resume, " +
+          "leaves the repository untouched. " +
+          "session: the same file, kept in the workspace instead (.pi/tasks/tasks-<sessionId>.json). " +
+          "project: shared across all sessions (.pi/tasks/tasks.json). " +
           "Takes effect on next session start.",
-        currentValue: cfg.taskScope ?? "session",
+        currentValue: cfg.taskScope ?? DEFAULT_TASK_SCOPE,
         values: ["memory", "session", "session-global", "project"],
       },
       {

@@ -28,11 +28,12 @@ import {
   onTurnStart,
   resetCadenceState,
 } from "./reminder-cadence.js";
+import { sweepSessionTaskFiles } from "./task-cleanup.js";
 import { resolveTaskGlyphs } from "./task-glyphs.js";
 import { reclaimGlobalSessionTasksDir, sessionTaskFile } from "./task-paths.js";
 import { TaskStore } from "./task-store.js";
-import { loadGlobalTasksConfig, loadTasksConfig } from "./tasks-config.js";
-import type { Task } from "./types.js";
+import { DEFAULT_TASK_SCOPE, loadGlobalTasksConfig, loadTasksConfig } from "./tasks-config.js";
+import type { NewTask, Task } from "./types.js";
 import { openSettingsMenu } from "./ui/settings-menu.js";
 import { TaskWidget, type UICtx } from "./ui/task-widget.js";
 
@@ -132,7 +133,7 @@ export default function (pi: ExtensionAPI) {
   // active workspace's overrides on the first context-bearing event.
   const cfg = loadGlobalTasksConfig();
   const piTasks = process.env.PI_TASKS;
-  let taskScope = cfg.taskScope ?? "session";
+  let taskScope = cfg.taskScope ?? DEFAULT_TASK_SCOPE;
 
   /** Both session scopes persist one file per session; they differ only in where it
    *  lives, so every lifecycle rule about session files applies to each of them. */
@@ -367,6 +368,7 @@ export default function (pi: ExtensionAPI) {
   // Initialize on the first context-bearing event and reinitialize when a host
   // switches this extension instance to a session in another workspace.
   let configuredCwd: string | undefined;
+  let activeSessionId: string | undefined;
   let persistedTasksShown = false;
   let agentsReattached = false;
   function initializeStoreForContext(ctx: ExtensionContext, reloadConfig = false) {
@@ -376,7 +378,7 @@ export default function (pi: ExtensionAPI) {
     if (reloadConfig || configuredCwd !== ctx.cwd) {
       for (const key of Object.keys(cfg) as (keyof typeof cfg)[]) delete cfg[key];
       Object.assign(cfg, loadTasksConfig(ctx.cwd));
-      taskScope = cfg.taskScope ?? "session";
+      taskScope = cfg.taskScope ?? DEFAULT_TASK_SCOPE;
     }
 
     // `pi --no-session` mints a session ID but never a session file. Keying off the
@@ -386,6 +388,7 @@ export default function (pi: ExtensionAPI) {
     const sessionId = isSessionScope() && !piTasks && ctx.sessionManager.getSessionFile()
       ? ctx.sessionManager.getSessionId()
       : undefined;
+    activeSessionId = sessionId;
     const nextTarget = resolveStoreTarget(ctx.cwd, sessionId);
     if (nextTarget.key !== storeTarget.key) {
       store = new TaskStore(nextTarget.path);
@@ -407,6 +410,25 @@ export default function (pi: ExtensionAPI) {
     if (taskScope === "session-global" && !piTasks && configuredCwd) {
       reclaimGlobalSessionTasksDir(configuredCwd);
     }
+  }
+
+  /** Workspaces already swept this process, so the scan runs once per workspace
+   *  rather than on every /new, /resume and fork. */
+  const sweptWorkspaces = new Set<string>();
+
+  /** Retire session task files left behind by sessions that ended without emptying
+   *  their list. Skipped entirely when PI_TASKS points the store somewhere of the
+   *  user's choosing — that path is theirs, not ours to tidy. */
+  function sweepStaleTaskFiles(ctx: ExtensionContext) {
+    if (piTasks || sweptWorkspaces.has(ctx.cwd)) return;
+    sweptWorkspaces.add(ctx.cwd);
+    const deleted = sweepSessionTaskFiles({
+      cwd: ctx.cwd,
+      sessionDir: ctx.sessionManager?.getSessionDir(),
+      keepSessionId: activeSessionId,
+      retentionDays: cfg.taskFileRetentionDays,
+    });
+    if (deleted > 0) debug(`cleanup: removed ${deleted} stale task file(s)`);
   }
 
   /** Re-link persisted in-progress tasks to the subagents still running for them.
@@ -460,6 +482,7 @@ export default function (pi: ExtensionAPI) {
     onTurnStart(cadence);
     latestCtx = ctx;
     widget.setUICtx(ctx.ui as UICtx);
+    widget.setAgentActive(true);
     initializeStoreForContext(ctx);
     if (autoClear.onTurnStart(cadence.currentTurn)) {
       if (isSessionScope()) deleteSessionFileIfEmpty();
@@ -472,6 +495,9 @@ export default function (pi: ExtensionAPI) {
   // cleared here; this only marks the boundary for the next TaskCreate.
   pi.on("agent_settled", async () => {
     autoClear.onRunEnded();
+    // Nothing is being worked on once the run ends, so the elapsed time beside a
+    // task stops counting and its spinner stops turning.
+    widget.setAgentActive(false);
   });
 
   // ── Token usage tracking + stale-task detection ──
@@ -580,6 +606,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     initializeStoreForContext(ctx, true);
+    sweepStaleTaskFiles(ctx);
     if (forkSeed?.tasks.length) store.seed(forkSeed); // carry the parent's tasks into the fork
     reattachAgents(); // subagents outlive a reload; relink them before events arrive
     // resume/reload/fork keep tasks; startup/new auto-clear an all-completed list.
@@ -600,6 +627,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (_event, ctx) => {
     latestCtx = ctx;
     widget.setUICtx(ctx.ui as UICtx);
+    widget.setAgentActive(true);
     initializeStoreForContext(ctx);
     reattachAgents();
     showPersistedTasks();
@@ -624,71 +652,75 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "TaskCreate",
     label: "TaskCreate",
-    description: `Use this tool to create a structured task list for your current coding session. This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user.
-It also helps the user understand the progress of the task and overall progress of their requests.
+    description: `Create tasks to track and show progress on multi-step work. Pass \`tasks\` to create a whole list in one call.
 
-## When to Use This Tool
+## When to use it
 
-Use this tool proactively in these scenarios:
+- Work that takes 3 or more distinct steps, or needs planning across several operations
+- The user lists what they want done — create the whole list in one call
+- New instructions worth capturing before you start, and follow-up work you discover while implementing
 
-- Complex multi-step tasks - When a task requires 3 or more distinct steps or actions
-- Non-trivial and complex tasks - Tasks that require careful planning or multiple operations
-- Plan mode - When using plan mode, create a task list to track the work
-- User explicitly requests todo list - When the user directly asks you to use the todo list
-- User provides multiple tasks - When users provide a list of things to be done (numbered or comma-separated). Create them all in one response with one TaskCreate call per task
-- After receiving new instructions - Immediately capture user requirements as tasks
-- When you start working on a task - Mark it as in_progress BEFORE beginning work
-- After completing a task - Mark it as completed and add any new follow-up tasks discovered during implementation
+Skip it for a single straightforward step or a purely conversational request; just do the work.
 
-## When NOT to Use This Tool
+## Fields
 
-Skip using this tool when:
-- There is only a single, straightforward task
-- The task is trivial and tracking it provides no organizational benefit
-- The task can be completed in less than 3 trivial steps
-- The task is purely conversational or informational
+- **subject**: short imperative title ("Fix authentication bug in login flow")
+- **description**: what to do, with enough context and acceptance criteria for another agent to pick it up
+- **activeForm** (optional): present continuous shown while the task runs ("Fixing authentication bug"); defaults to the subject
+- **agentType** (optional): marks the task for subagent execution via TaskExecute ("general-purpose", "Explore")
 
-NOTE that you should not use this tool if there is only one trivial task to do. In this case you are better off just doing the task directly.
-
-## Task Fields
-
-- **subject**: A brief, actionable title in imperative form (e.g., "Fix authentication bug in login flow")
-- **description**: Detailed description of what needs to be done, including context and acceptance criteria
-- **activeForm** (optional): Present continuous form shown in the spinner when the task is in_progress (e.g., "Fixing authentication bug"). If omitted, the spinner shows the subject instead.
-
-All tasks are created with status \`pending\`.
-
-## Tips
-
-- Create tasks with clear, specific subjects that describe the outcome
-- Include enough detail in the description for another agent to understand and complete the task
-- After creating tasks, use TaskUpdate to set up dependencies (blocks/blockedBy) if needed
-- Check TaskList first to avoid creating duplicate tasks
-- Include \`agentType\` (e.g., "general-purpose", "Explore") to mark tasks for subagent execution via TaskExecute
-- To create several tasks at once, call TaskCreate multiple times in a single response — independent tool calls run in parallel, so the whole batch is created in one turn (one task per call).`,
+Tasks start \`pending\`. Check TaskList first to avoid duplicates, and use TaskUpdate for status changes and dependencies.`,
     promptGuidelines: [
       "When working on complex multi-step tasks, use TaskCreate to track progress and TaskUpdate to update status.",
+      "Create a whole batch of tasks in a single TaskCreate call via `tasks`, not one call per task.",
       "Mark tasks as in_progress before starting work and completed when done.",
       "Use TaskList to check for available work after completing a task.",
     ],
     parameters: Type.Object({
-      subject: Type.String({ description: "A brief title for the task" }),
-      description: Type.String({ description: "A detailed description of what needs to be done" }),
+      subject: Type.Optional(Type.String({ description: "A brief title for the task. Omit when using `tasks`." })),
+      description: Type.Optional(Type.String({ description: "A detailed description of what needs to be done. Omit when using `tasks`." })),
       activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress (e.g., 'Running tests')" })),
       agentType: Type.Optional(Type.String({ description: "Agent type for subagent execution (e.g., 'general-purpose', 'Explore'). Tasks with agentType can be started via TaskExecute." })),
       metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Arbitrary metadata to attach to the task" })),
+      tasks: Type.Optional(Type.Array(
+        Type.Object({
+          subject: Type.String({ description: "A brief title for the task" }),
+          description: Type.String({ description: "A detailed description of what needs to be done" }),
+          activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress" })),
+          agentType: Type.Optional(Type.String({ description: "Agent type for subagent execution via TaskExecute" })),
+          metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Arbitrary metadata to attach to the task" })),
+        }),
+        { description: "Several tasks to create at once, in list order. Preferred over one call per task." },
+      )),
     }),
 
     execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      // `tasks` and the single-task fields are the same request in two shapes, so one
+      // path handles both. An empty `tasks` is a mistake worth reporting rather than a
+      // silent no-op, hence the length check instead of a truthiness one.
+      const requested = params.tasks?.length ? params.tasks : [params];
+      const specs: NewTask[] = [];
+      for (const spec of requested) {
+        if (!spec.subject || !spec.description) {
+          return Promise.resolve(textResult("TaskCreate needs a subject and a description — pass them directly, or a `tasks` array of them."));
+        }
+        const metadata = { ...spec.metadata, ...(spec.agentType ? { agentType: spec.agentType } : {}) };
+        specs.push({
+          subject: spec.subject,
+          description: spec.description,
+          activeForm: spec.activeForm,
+          metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+        });
+      }
+
       // A finished list must not collect the batch that follows it. The turn countdowns
       // cannot be relied on for that: they only tick at `turn_start`, so a run that ends
       // right after its last completion freezes one mid-count.
       autoClear.startNewBatch();
-      const meta = params.metadata ?? {};
-      if (params.agentType) meta.agentType = params.agentType;
-      const task = store.create(params.subject, params.description, params.activeForm, Object.keys(meta).length > 0 ? meta : undefined);
+      const created = store.createMany(specs);
       widget.update();
-      return Promise.resolve(textResult(`Task #${task.id} created successfully: ${task.subject}`));
+      const lines = created.map(task => `Task #${task.id} created successfully: ${task.subject}`);
+      return Promise.resolve(textResult(lines.join("\n")));
     },
   });
 
@@ -699,26 +731,11 @@ All tasks are created with status \`pending\`.
   pi.registerTool({
     name: "TaskList",
     label: "TaskList",
-    description: `Use this tool to list all tasks in the task list.
+    description: `List every task, one line each: \`#id [status] subject\`, plus its owner and any blockers still open.
 
-## When to Use This Tool
+Use it to see what is available to work on, to check progress, and to find newly unblocked work after finishing something. Work in ID order when several are open — earlier tasks usually set up later ones. A task with open blockers is not ready.
 
-- To see what tasks are available to work on (status: 'pending', no owner, not blocked)
-- To check overall progress on the project
-- To find tasks that are blocked and need dependencies resolved
-- After completing a task, to check for newly unblocked work or claim the next available task
-- **Prefer working on tasks in ID order** (lowest ID first) when multiple tasks are available, as earlier tasks often set up context for later ones
-
-## Output
-
-Returns a summary of each task:
-- **id**: Task identifier (use with TaskGet, TaskUpdate)
-- **subject**: Brief description of the task
-- **status**: 'pending', 'in_progress', or 'completed'
-- **owner**: Agent ID if assigned, empty if available
-- **blockedBy**: List of open task IDs that must be resolved first (tasks with blockedBy cannot be claimed until dependencies resolve)
-
-Use TaskGet with a specific task ID to view full details including description and comments.`,
+TaskGet returns one task's full description.`,
     parameters: Type.Object({}),
 
     execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
@@ -765,27 +782,9 @@ Use TaskGet with a specific task ID to view full details including description a
   pi.registerTool({
     name: "TaskGet",
     label: "TaskGet",
-    description: `Use this tool to retrieve a task by its ID from the task list.
+    description: `Read one task in full: its subject, description, status, owner, metadata, and both sides of its dependencies.
 
-## When to Use This Tool
-
-- When you need the full description and context before starting work on a task
-- To understand task dependencies (what it blocks, what blocks it)
-- After being assigned a task, to get complete requirements
-
-## Output
-
-Returns full task details:
-- **subject**: Task title
-- **description**: Detailed requirements and context
-- **status**: 'pending', 'in_progress', or 'completed'
-- **blocks**: Tasks waiting on this one to complete
-- **blockedBy**: Tasks that must complete before this one can start
-
-## Tips
-
-- After fetching a task, verify its blockedBy list is empty before beginning work.
-- Use TaskList to see all tasks in summary form.`,
+Use it before starting a task, to get the requirements and confirm nothing still blocks it. TaskList gives the whole list in summary form.`,
     parameters: Type.Object({
       taskId: Type.String({ description: "The ID of the task to retrieve" }),
     }),
@@ -836,84 +835,25 @@ Returns full task details:
   pi.registerTool({
     name: "TaskUpdate",
     label: "TaskUpdate",
-    description: `Use this tool to update a task in the task list.
+    description: `Update one task: its status, its details, or its dependencies.
 
-## When to Use This Tool
+## Status
 
-**Before starting work on a task:**
-- Mark it in_progress BEFORE beginning — do not start work without updating status first
-- After resolving, call TaskList to find your next task
+\`pending\` → \`in_progress\` → \`completed\`, plus \`deleted\` to remove a task that is no longer relevant.
 
-**Mark tasks as resolved:**
-- When you have completed the work described in a task
-- When a task is no longer needed or has been superseded
-- IMPORTANT: Always mark your assigned tasks as resolved when you finish them
-- After resolving, call TaskList to find your next task
+- Mark a task in_progress *before* starting it, and completed as soon as it is genuinely done.
+- Keep it in_progress if tests fail, the implementation is partial, or you hit an error you have not resolved — and create a task for whatever is blocking you.
+- After completing one, call TaskList to find the next.
 
-- ONLY mark a task as completed when you have FULLY accomplished it
-- If you encounter errors, blockers, or cannot finish, keep the task as in_progress
-- When blocked, create a new task describing what needs to be resolved
-- Never mark a task as completed if:
-  - Tests are failing
-  - Implementation is partial
-  - You encountered unresolved errors
-  - You couldn't find necessary files or dependencies
+## Other fields
 
-**Delete tasks:**
-- When a task is no longer relevant or was created in error
-- Setting status to \`deleted\` permanently removes the task
+- **subject** / **description**: revise the task when requirements change
+- **activeForm**: present continuous shown while it runs ("Running tests")
+- **owner**: claim the task
+- **metadata**: merged into the task; a key set to null is removed
+- **addBlocks** / **addBlockedBy**: dependencies, e.g. \`{"taskId": "2", "addBlockedBy": ["1"]}\`
 
-**Update task details:**
-- When requirements change or become clearer
-- When establishing dependencies between tasks
-
-## Fields You Can Update
-
-- **status**: The task status (see Status Workflow below)
-- **subject**: Change the task title (imperative form, e.g., "Run tests")
-- **description**: Change the task description
-- **activeForm**: Present continuous form shown in spinner when in_progress (e.g., "Running tests")
-- **owner**: Change the task owner (agent name)
-- **metadata**: Merge metadata keys into the task (set a key to null to delete it)
-- **addBlocks**: Mark tasks that cannot start until this one completes
-- **addBlockedBy**: Mark tasks that must complete before this one can start
-
-## Status Workflow
-
-Status progresses: \`pending\` → \`in_progress\` → \`completed\`
-
-Use \`deleted\` to permanently remove a task.
-
-## Staleness
-
-Make sure to read a task's latest state using \`TaskGet\` before updating it.
-
-## Examples
-
-Mark task as in progress when starting work:
-\`\`\`json
-{"taskId": "1", "status": "in_progress"}
-\`\`\`
-
-Mark task as completed after finishing work:
-\`\`\`json
-{"taskId": "1", "status": "completed"}
-\`\`\`
-
-Delete a task:
-\`\`\`json
-{"taskId": "1", "status": "deleted"}
-\`\`\`
-
-Claim a task by setting owner:
-\`\`\`json
-{"taskId": "1", "owner": "my-name"}
-\`\`\`
-
-Set up task dependencies:
-\`\`\`json
-{"taskId": "2", "addBlockedBy": ["1"]}
-\`\`\``,
+Read the task with TaskGet first when you are unsure of its current state.`,
     parameters: Type.Object({
       taskId: Type.String({ description: "The ID of the task to update" }),
       status: Type.Optional(Type.Unsafe<"pending" | "in_progress" | "completed" | "deleted">({

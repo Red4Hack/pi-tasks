@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **⚠️ Breaking: session tasks are stored outside the workspace by default.** `taskScope` now defaults to `session-global`, so a new session writes `<agent-dir>/tasks/sessions/<project-key>/tasks-<sessionId>.json` instead of `<workspace>/.pi/tasks/`. Nothing is moved or deleted, and a session that already has a workspace file keeps using it. Set `"taskScope": "session"` in `tasks-config.json` to keep writing into the repository.
+
+### Added
+- **`TaskCreate` creates a whole list in one call.** A new optional `tasks` array carries the same fields as a single task, so a plan costs one round trip instead of one per task — and one lock and one write on a file-backed store instead of one of each. The single-task form is unchanged, and an incomplete entry rejects the whole batch rather than creating half a plan. This replaces the parallel-call steering that [#58](https://github.com/tintinweb/pi-tasks/pull/58) put in the tool description, which asked the model to do in N calls what the schema now does in one.
+- **Session task files are retired automatically.** A file is deleted when its list empties, so a session that ends mid-list strands one for good — over months, a directory of task files for sessions no one can resume. Every session start now sweeps both session directories for the workspace and deletes files whose session pi no longer has a transcript for, or that have not been written to for `taskFileRetentionDays` days (default `14`; `0` disables). The running session is never swept, `project` scope's shared list is never touched, and the orphan rule is skipped when the session directory cannot be read.
+
+### Changed
+- **BREAKING: `taskScope` defaults to `session-global`.** Per-session task files are runtime state keyed by a session ID: they mean nothing to anyone else cloning the repository, and the old default cost an untracked `.pi/tasks/` and a `.gitignore` rule in every project pi ran in. The scope only decides where *new* files are created, so upgrading strands nothing. ([#53](https://github.com/tintinweb/pi-tasks/issues/53) — thanks [@rfgamaral](https://github.com/rfgamaral) — and [#57](https://github.com/tintinweb/pi-tasks/issues/57))
+- **The task tool descriptions are roughly half their former size.** `TaskCreate`, `TaskUpdate`, `TaskList` and `TaskGet` mirrored Claude Code's specs verbatim, which spent a good chunk of every system prompt restating what the schema already says. They now state when to reach for the tool and what the fields mean, and the workflow rules that actually change behaviour are kept.
+
+### Fixed
+- **The widget's elapsed time stops when the agent does.** It was derived from the task's start time, so a task left `in_progress` on a finished screen kept counting — and reported minutes of "work" that were really you reading the answer. The clock is now banked when the agent settles and resumes when it starts again, and the spinner stops with it.
+
 ## [0.9.0] - 2026-08-24
 
 ### Added

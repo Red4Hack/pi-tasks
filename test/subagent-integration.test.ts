@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import initExtension from "../src/index.js";
-import { sessionTaskFile, workspaceSessionTaskFile } from "../src/task-paths.js";
+import { globalSessionTasksDir, sessionTaskFile } from "../src/task-paths.js";
 import { TaskStore } from "../src/task-store.js";
 import { TaskWidget, type Theme, type UICtx } from "../src/ui/task-widget.js";
 import { installSubagentsMock, type MockEventBus, mockCtx, mockPi, mockSessionCtx } from "./helpers/mock-pi.js";
@@ -18,6 +18,7 @@ import { installSubagentsMock, type MockEventBus, mockCtx, mockPi, mockSessionCt
 // developer's global <agentDir>/tasks-config.json leak into the results.
 const config = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
 vi.mock("../src/tasks-config.js", () => ({
+  DEFAULT_TASK_SCOPE: "session-global",
   loadGlobalTasksConfig: () => ({ ...config.current }),
   loadTasksConfig: () => ({ ...config.current }),
   saveTasksConfig: () => {},
@@ -40,11 +41,12 @@ describe("Session task rehydration", () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    rmSync(globalSessionTasksDir(cwd), { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   });
 
   const sessionCtx = (sessionId: string) => mockSessionCtx(sessionId, { cwd });
-  const sessionFile = (sessionId: string) => sessionTaskFile(cwd, sessionId, "session");
+  const sessionFile = (sessionId: string) => sessionTaskFile(cwd, sessionId, "session-global");
 
   it("renders default session-scoped tasks immediately after reload", async () => {
     const sessionId = `reload-${process.pid}-${Date.now()}`;
@@ -179,14 +181,17 @@ describe("Workspace-scoped store resolution", () => {
   };
 
   afterEach(() => {
-    for (const dir of workspaces.splice(0)) rmSync(dir, { recursive: true, force: true });
+    for (const dir of workspaces.splice(0)) {
+      rmSync(globalSessionTasksDir(dir), { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("namespaces session tasks by ctx.cwd instead of the host process cwd", async () => {
     const cwd = workspace("workspace");
     const sessionId = `ctx-cwd-${process.pid}-${Date.now()}`;
-    const taskFile = workspaceSessionTaskFile(cwd, sessionId);
-    const hostTaskFile = workspaceSessionTaskFile(process.cwd(), sessionId);
+    const taskFile = sessionTaskFile(cwd, sessionId, "session-global");
+    const hostTaskFile = sessionTaskFile(process.cwd(), sessionId, "session-global");
     delete process.env.PI_TASKS;
     const mock = mockPi();
     initExtension(mock.pi as any);
@@ -218,9 +223,10 @@ describe("Workspace-scoped store resolution", () => {
     await mock.fireLifecycle("session_start", { reason: "startup" }, ctxB);
     await mock.executeTool("TaskCreate", { subject: "Workspace B", description: "d" }, ctxB);
 
-    expect(sessionTaskFile(cwdA, sessionId, "session")).not.toBe(sessionTaskFile(cwdB, sessionId, "session"));
-    expect(new TaskStore(sessionTaskFile(cwdA, sessionId, "session")).list().map(t => t.subject)).toEqual(["Workspace A"]);
-    expect(new TaskStore(sessionTaskFile(cwdB, sessionId, "session")).list().map(t => t.subject)).toEqual(["Workspace B"]);
+    const file = (dir: string) => sessionTaskFile(dir, sessionId, "session-global");
+    expect(file(cwdA)).not.toBe(file(cwdB));
+    expect(new TaskStore(file(cwdA)).list().map(t => t.subject)).toEqual(["Workspace A"]);
+    expect(new TaskStore(file(cwdB)).list().map(t => t.subject)).toEqual(["Workspace B"]);
   });
 
   it("loads project scope from ctx.cwd and stores the shared task list there", async () => {
@@ -273,7 +279,7 @@ describe("Workspace-scoped store resolution", () => {
     await mock.fireLifecycle("session_start", { reason: "startup" }, ctxB);
     await mock.executeTool("TaskCreate", { subject: "Task B", description: "Session B" }, ctxB);
 
-    const file = (id: string) => sessionTaskFile(cwd, id, "session");
+    const file = (id: string) => sessionTaskFile(cwd, id, "session-global");
     expect(new TaskStore(file(sessionA)).list().map(t => t.subject)).toEqual(["Task A"]);
     expect(new TaskStore(file(sessionB)).list().map(t => t.subject)).toEqual(["Task B"]);
   });

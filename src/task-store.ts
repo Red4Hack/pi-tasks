@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { sortTasks, type TaskSortOrder } from "./task-sort.js";
-import type { Task, TaskStatus, TaskStoreData } from "./types.js";
+import type { NewTask, Task, TaskStatus, TaskStoreData } from "./types.js";
 
 const TASKS_DIR = join(homedir(), ".pi", "tasks");
 const LOCK_RETRY_MS = 50;
@@ -177,16 +177,23 @@ export class TaskStore {
   }
 
   create(subject: string, description: string, activeForm?: string, metadata?: Record<string, any>): Task {
-    return this.withLock(() => {
+    return this.createMany([{ subject, description, activeForm, metadata }])[0];
+  }
+
+  /** Create a batch under a single lock and a single write. A file-backed store
+   *  pays for a lock round trip and a rewrite of the whole file per mutation, so
+   *  creating a list one task at a time costs that once per task. */
+  createMany(specs: NewTask[]): Task[] {
+    return this.withLock(() => specs.map(spec => {
       const now = Date.now();
       const task: Task = {
         id: String(this.nextId++),
-        subject,
-        description,
+        subject: spec.subject,
+        description: spec.description,
         status: "pending",
-        activeForm,
+        activeForm: spec.activeForm,
         owner: undefined,
-        metadata: metadata ?? {},
+        metadata: spec.metadata ?? {},
         blocks: [],
         blockedBy: [],
         createdAt: now,
@@ -194,7 +201,7 @@ export class TaskStore {
       };
       this.tasks.set(task.id, task);
       return task;
-    });
+    }));
   }
 
   get(id: string): Task | undefined {

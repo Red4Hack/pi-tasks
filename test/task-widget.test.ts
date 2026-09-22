@@ -891,3 +891,88 @@ describe("spinner animation timing", () => {
     expect(glyph()).not.toBe(before);
   });
 });
+
+describe("elapsed time across the agent stopping and starting", () => {
+  let store: TaskStore;
+  let widget: TaskWidget;
+  let ui: ReturnType<typeof mockUICtx>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    store = new TaskStore();
+    widget = new TaskWidget(store);
+    ui = mockUICtx();
+    widget.setUICtx(ui.ctx);
+    store.create("Long job", "d", "Working");
+    store.update("1", { status: "in_progress" });
+    widget.setActiveTask("1");
+  });
+
+  afterEach(() => {
+    widget.dispose();
+    vi.useRealTimers();
+  });
+
+  const activeLine = () => renderWidget(ui.state)[1];
+  /** The spinner glyph is the first non-space character of the task line. */
+  const glyph = () => activeLine().trim().split(" ")[0];
+
+  it("stops counting once the run ends", () => {
+    // The figure beside a task is time it was worked on. A task left in_progress
+    // when the agent stops is not being worked on — the user is reading a finished
+    // screen, and the clock used to keep running against it for hours.
+    vi.advanceTimersByTime(5_000);
+    widget.setAgentActive(false);
+    vi.advanceTimersByTime(600_000);
+
+    expect(activeLine()).toContain("(5s)");
+  });
+
+  it("resumes counting when the agent starts working again", () => {
+    vi.advanceTimersByTime(5_000);
+    widget.setAgentActive(false);
+    vi.advanceTimersByTime(600_000);
+    widget.setAgentActive(true);
+    vi.advanceTimersByTime(3_000);
+
+    // The idle stretch is not counted; the two working stretches are.
+    expect(activeLine()).toContain("(8s)");
+  });
+
+  it("stops the spinner while the agent is stopped", () => {
+    // An animation is a claim that something is happening.
+    widget.setAgentActive(false);
+    const before = glyph();
+    vi.advanceTimersByTime(1_500);
+
+    expect(glyph()).toBe(before);
+  });
+
+  it("animates again once the agent comes back", () => {
+    widget.setAgentActive(false);
+    widget.setAgentActive(true);
+    const before = glyph();
+    vi.advanceTimersByTime(150);
+
+    expect(glyph()).not.toBe(before);
+  });
+
+  it("does not start the clock for a task activated while stopped", () => {
+    // Reattaching an agent's task on reload runs outside a turn.
+    widget.setAgentActive(false);
+    store.create("Reattached", "d", "Resuming");
+    store.update("2", { status: "in_progress" });
+    widget.setActiveTask("2");
+    vi.advanceTimersByTime(600_000);
+
+    expect(renderWidget(ui.state)[2]).toContain("(0s)");
+  });
+
+  it("ignores a repeated stop instead of re-banking the same stretch", () => {
+    vi.advanceTimersByTime(5_000);
+    widget.setAgentActive(false);
+    widget.setAgentActive(false);
+
+    expect(activeLine()).toContain("(5s)");
+  });
+});

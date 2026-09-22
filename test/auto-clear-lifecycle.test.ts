@@ -10,11 +10,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import initExtension from "../src/index.js";
-import { sessionTaskFile } from "../src/task-paths.js";
+import { globalSessionTasksDir, sessionTaskFile } from "../src/task-paths.js";
 import { mockPi, mockSessionCtx } from "./helpers/mock-pi.js";
 
 const config = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
 vi.mock("../src/tasks-config.js", () => ({
+  DEFAULT_TASK_SCOPE: "session-global",
   loadGlobalTasksConfig: () => ({ ...config.current }),
   loadTasksConfig: () => ({ ...config.current }),
   saveTasksConfig: () => {},
@@ -31,11 +32,12 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.PI_TASKS;
+  rmSync(globalSessionTasksDir(cwd), { recursive: true, force: true });
   rmSync(cwd, { recursive: true, force: true });
 });
 
 const ctxFor = (sessionId = "s1") => mockSessionCtx(sessionId, { cwd });
-const sessionFile = (sessionId: string) => sessionTaskFile(cwd, sessionId, "session");
+const sessionFile = (sessionId: string) => sessionTaskFile(cwd, sessionId, "session-global");
 
 type Mock = ReturnType<typeof mockPi>;
 
@@ -167,8 +169,9 @@ describe("auto-clear across batches", () => {
     for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, ctx);
 
     expect(existsSync(sessionFile("s1"))).toBe(false);
-    // Only the file goes. `.pi/tasks/` is left standing, as every release so far
-    // has left it — `.pi/` holds project config that is not ours to remove.
-    expect(existsSync(join(cwd, ".pi", "tasks"))).toBe(true);
+    // The default scope holds the file outside the repository, and reclaims the
+    // directory with it: nothing is left behind in either place.
+    expect(existsSync(globalSessionTasksDir(cwd))).toBe(false);
+    expect(existsSync(join(cwd, ".pi"))).toBe(false);
   });
 });

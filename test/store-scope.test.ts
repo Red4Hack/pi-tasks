@@ -13,10 +13,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import initExtension from "../src/index.js";
 import { globalSessionTasksDir, sessionTaskFile, workspaceSessionTaskFile } from "../src/task-paths.js";
 import { TaskStore } from "../src/task-store.js";
+import { DEFAULT_TASK_SCOPE } from "../src/tasks-config.js";
 import { mockPi, mockSessionCtx } from "./helpers/mock-pi.js";
 
 const config = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
 vi.mock("../src/tasks-config.js", () => ({
+  DEFAULT_TASK_SCOPE: "session-global",
   loadGlobalTasksConfig: () => ({ ...config.current }),
   loadTasksConfig: () => ({ ...config.current }),
   saveTasksConfig: () => {},
@@ -33,6 +35,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.PI_TASKS;
+  rmSync(globalSessionTasksDir(cwd), { recursive: true, force: true });
   rmSync(cwd, { recursive: true, force: true });
 });
 
@@ -41,6 +44,7 @@ const ctxFor = (sessionId = "s1", opts?: { persisted?: boolean }) =>
   mockSessionCtx(sessionId, { ...opts, cwd });
 const projectFile = () => join(cwd, ".pi", "tasks", "tasks.json");
 const sessionFile = (id: string) => workspaceSessionTaskFile(cwd, id);
+const defaultFile = (id: string) => sessionTaskFile(cwd, id, DEFAULT_TASK_SCOPE);
 
 describe("taskScope: project", () => {
   beforeEach(() => { config.current = { taskScope: "project" }; });
@@ -106,7 +110,7 @@ describe("taskScope: memory", () => {
   });
 });
 
-describe("taskScope: session, without a persisted session", () => {
+describe("session scope, without a persisted session", () => {
   // pi --no-session (and SessionManager.inMemory()) mints a session ID but never a
   // session file. A session task file written for it is orphaned the moment pi exits.
   it("keeps tasks in memory and leaves nothing on disk", async () => {
@@ -116,6 +120,7 @@ describe("taskScope: session, without a persisted session", () => {
     await mock.executeTool("TaskCreate", { subject: "Ephemeral", description: "d" });
 
     expect(existsSync(join(cwd, ".pi"))).toBe(false);
+    expect(existsSync(globalSessionTasksDir(cwd))).toBe(false);
     expect((await mock.executeTool("TaskList", {})).content[0].text).toContain("Ephemeral");
   });
 
@@ -125,7 +130,7 @@ describe("taskScope: session, without a persisted session", () => {
     await mock.fireLifecycle("session_start", { reason: "startup" }, ctxFor("s1"));
     await mock.executeTool("TaskCreate", { subject: "Durable", description: "d" });
 
-    expect(existsSync(sessionFile("s1"))).toBe(true);
+    expect(existsSync(defaultFile("s1"))).toBe(true);
   });
 
   it("does not fall back to a file when a later lifecycle event fires", async () => {
@@ -138,6 +143,7 @@ describe("taskScope: session, without a persisted session", () => {
     await mock.executeTool("TaskCreate", { subject: "Ephemeral", description: "d" });
 
     expect(existsSync(join(cwd, ".pi"))).toBe(false);
+    expect(existsSync(globalSessionTasksDir(cwd))).toBe(false);
   });
 });
 
@@ -216,9 +222,9 @@ describe("session_start with a persisted list", () => {
     expect(ctx.ui.setWidget).toHaveBeenCalled();
   });
 
-  it("keeps the default scope writing into the workspace", async () => {
-    // The compatibility guarantee: upgrading moves nobody's tasks. Asserted
-    // against the literal path rather than a helper, so a change to path
+  it("keeps the default scope out of the workspace", async () => {
+    // A fresh session under the default scope leaves the repository untouched.
+    // Asserted against the literal path rather than a helper, so a change to path
     // resolution cannot quietly move the target along with the assertion.
     const mock = mockPi();
     initExtension(mock.pi as any);
@@ -227,8 +233,22 @@ describe("session_start with a persisted list", () => {
     await mock.fireLifecycle("session_start", { reason: "startup" }, ctx);
     await mock.executeTool("TaskCreate", { subject: "Default scope", description: "d" }, ctx);
 
-    const inWorkspace = join(cwd, ".pi", "tasks", "tasks-s1.json");
-    expect(new TaskStore(inWorkspace).list().map(t => t.subject)).toEqual(["Default scope"]);
+    const global = join(globalSessionTasksDir(cwd), "tasks-s1.json");
+    expect(new TaskStore(global).list().map(t => t.subject)).toEqual(["Default scope"]);
+    expect(existsSync(join(cwd, ".pi"))).toBe(false);
+  });
+
+  it("keeps a session that already has a workspace file writing there", async () => {
+    // The compatibility guarantee: upgrading moves nobody's tasks.
+    seed("s1", ["pending"]);
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+
+    const ctx = ctxFor("s1");
+    await mock.fireLifecycle("session_start", { reason: "startup" }, ctx);
+    await mock.executeTool("TaskCreate", { subject: "Written after", description: "d" }, ctx);
+
+    expect(new TaskStore(sessionFile("s1")).list().map(t => t.subject)).toEqual(["Task 1", "Written after"]);
     expect(existsSync(globalSessionTasksDir(cwd))).toBe(false);
   });
 });

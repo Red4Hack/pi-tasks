@@ -12,10 +12,17 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { TaskGlyphsConfig } from "./task-glyphs.js";
 import type { TaskSortOrder } from "./task-sort.js";
 
+/** Where session task files go when nothing says otherwise. Out of the workspace:
+ *  a file keyed by a session ID is runtime state, not project content, and every
+ *  repository the agent was ever pointed at would otherwise grow a `.pi/tasks/`. */
+export const DEFAULT_TASK_SCOPE = "session-global";
+
 export interface TasksConfig {
   // "session" keeps per-session files in the workspace; "session-global" keeps them
   // under the agent directory instead. Same scope, different home — see task-paths.ts.
-  taskScope?: "memory" | "session" | "session-global" | "project";  // default: "session"
+  taskScope?: "memory" | "session" | "session-global" | "project";  // default: "session-global"
+  // Days an unused session task file is kept before being swept; 0 never sweeps.
+  taskFileRetentionDays?: number;        // default: 14 (see task-cleanup.ts)
   autoCascade?: boolean;   // default: false
   autoClearCompleted?: "never" | "on_list_complete" | "on_task_complete";  // default: "on_list_complete"
   collapseCompleted?: boolean;           // default: false

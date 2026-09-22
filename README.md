@@ -12,7 +12,7 @@ https://github.com/user-attachments/assets/1d0ee87a-e0a5-4bfa-a9b9-2f9144cb905b
 
 ## Features
 
-- **7 LLM-callable tools** — `TaskCreate`, `TaskList`, `TaskGet`, `TaskUpdate`, `TaskOutput`, `TaskStop`, `TaskExecute` — matching Claude Code's exact tool specs and descriptions
+- **7 LLM-callable tools** — `TaskCreate`, `TaskList`, `TaskGet`, `TaskUpdate`, `TaskOutput`, `TaskStop`, `TaskExecute` — following Claude Code's tool specs, with `TaskCreate` taking a whole list in one call
 - **Persistent widget** — live task list above the editor with `✔`/`◼`/`◻` status marks, task numbers (`#1`, `#2`, …), strikethrough for completed tasks, star spinner (`✳✽`) for active tasks with elapsed time and token counts. Every glyph is [configurable](CUSTOMIZING.md#task-glyphs)
 - **System-reminder injection** — periodic `<system-reminder>` nudges injected into the upcoming LLM request (via the `context` hook, transient and never persisted) when task tools haven't been used recently, or when a task is left stuck `in_progress` after a text-only turn. Shaped after Claude Code's todo reminders — an empty-list nudge or a JSON echo of the current list (capped at 10 tasks)
 - **Prompt guidelines** — workflow contract encoded in tool descriptions, nudging the LLM at the point of tool use
@@ -53,6 +53,8 @@ The extension renders a persistent widget above the editor:
 | `◻` | Pending |
 | `✳`/`✽` | Animated star spinner — actively executing task (shows `activeForm` text, elapsed time, token counts) |
 
+The elapsed time counts the time a task was actually worked on: it stops when the agent stops, and resumes when it starts again. A task left `in_progress` on a finished screen is not being worked on, so neither its clock nor its spinner keeps running while you read it.
+
 ### Widget display settings
 
 How tasks are sorted and how many are shown can be configured via `/tasks` → Settings (saved as project overrides in `.pi/tasks-config.json`), except `glyphs`, which is set in the config file directly. All defaults preserve the original behaviour.
@@ -91,18 +93,29 @@ See [Writing your own sort order](CUSTOMIZING.md#writing-your-own-sort-order) fo
 
 ### `TaskCreate`
 
-Create a structured task. Used proactively for complex multi-step work.
+Create tasks to track multi-step work. A whole list is created in one call by passing `tasks`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `subject` | string | yes | Brief imperative title |
-| `description` | string | yes | Detailed context and acceptance criteria |
+| `tasks` | object[] | no | Several tasks to create at once, in list order — each with the fields below |
+| `subject` | string | yes* | Brief imperative title |
+| `description` | string | yes* | Detailed context and acceptance criteria |
 | `activeForm` | string | no | Present continuous form for spinner (e.g., "Running tests") |
 | `agentType` | string | no | Agent type for subagent execution (e.g., `"general-purpose"`, `"Explore"`) |
 | `metadata` | object | no | Arbitrary key-value pairs |
 
+\* Required per task: either directly on the call, or on each entry of `tasks`.
+
 ```
 → Task #1 created successfully: Fix authentication bug
+```
+
+A batch is numbered, reported and stored exactly as the equivalent run of single calls would be, but costs one round trip instead of one per task — and on a file-backed list, one lock and one write instead of one of each per task. An incomplete entry rejects the whole batch rather than creating half a plan.
+
+```
+→ Task #1 created successfully: Read the spec
+  Task #2 created successfully: Write the code
+  Task #3 created successfully: Run the tests
 ```
 
 ### `TaskList`
@@ -221,27 +234,42 @@ Task storage is controlled by the `taskScope` setting (`/tasks` → Settings →
 | Mode | File | Behaviour |
 |------|------|-----------|
 | `memory` | *(none)* | In-memory only — tasks lost when session ends |
-| `session` **(default)** | `<workspace>/.pi/tasks/tasks-<sessionId>.json` | Per-session file — isolated between sessions, survives resume |
-| `session-global` | `<agent-dir>/tasks/sessions/<project-key>/tasks-<sessionId>.json` | The same, kept outside the workspace so repositories stay clean |
+| `session-global` **(default)** | `<agent-dir>/tasks/sessions/<project-key>/tasks-<sessionId>.json` | Per-session file — isolated between sessions, survives resume, kept outside the workspace |
+| `session` | `<workspace>/.pi/tasks/tasks-<sessionId>.json` | The same file, kept in the workspace instead |
 | `project` | `<workspace>/.pi/tasks/tasks.json` | Shared across all sessions in the project |
 
 `<workspace>` is the directory pi reports for the session — the same one its file tools operate in. That is normally where you started pi; it differs only when a session is opened by an explicit path from another project, or when a host serves sessions from elsewhere.
 
-`session-global` exists because a per-session file keyed by a session ID is runtime state, not project content: it means nothing to anyone else who clones the repository, and it costs a `.gitignore` rule per project. `<agent-dir>` is `~/.pi/agent` unless pi is configured otherwise, the same directory the [global settings](#global-defaults) live in. `<project-key>` encodes the workspace path the way pi encodes it for its own session logs (`/Users/me/work/repo` → `--Users-me-work-repo--`), so a project's task files sit under the same name as its transcripts and same-ID sessions in different workspaces cannot collide.
+The default keeps task files out of your repositories: a file keyed by a session ID is runtime state, not project content — it means nothing to anyone else who clones the repository, and it would cost a `.gitignore` rule per project. `<agent-dir>` is `~/.pi/agent` unless pi is configured otherwise, the same directory the [global settings](#global-defaults) live in. `<project-key>` encodes the workspace path the way pi encodes it for its own session logs (`/Users/me/work/repo` → `--Users-me-work-repo--`), so a project's task files sit under the same name as its transcripts and same-ID sessions in different workspaces cannot collide.
 
 Under either session scope, tasks stay in memory whenever pi is not persisting the session (`pi --no-session`) — there is no session for the file to belong to, so none is written. `project` scope still writes its shared list, since that belongs to the project rather than the session.
 
-Switching to `session-global` never moves or deletes anything. It changes where *new* session files are created; a session that already has a file in `<workspace>/.pi/tasks/` keeps using it, so resuming that session still finds its tasks and switching back to `session` strands nothing. To empty an existing `.pi/tasks/`, clear those sessions' tasks as usual — the file is removed once its list is empty.
+The scope only decides where a *new* session file is created; nothing is moved or deleted when it changes. A session that already has a file in `<workspace>/.pi/tasks/` keeps using it under either setting, so an upgrade strands nothing and resuming that session still finds its tasks. To empty an existing `.pi/tasks/`, clear those sessions' tasks as usual — the file is removed once its list is empty.
 
-Picking `session-global` from `/tasks` → Settings saves it as a *project* override in `<workspace>/.pi/tasks-config.json`, so that repository still gets a `.pi/` — holding config rather than task data. To apply it everywhere and leave repositories alone, set it once as a [global default](#global-defaults) instead:
+To keep task files in the repository, set `session` as a [global default](#global-defaults) or per project:
 
 ```json
 {
-  "taskScope": "session-global"
+  "taskScope": "session"
 }
 ```
 
 On new session start, if all persisted tasks are completed they are auto-cleared for a clean slate. On session resume, all tasks (including completed) are shown so the user can review progress. Empty session files are automatically deleted when all tasks are cleared.
+
+### Retiring old session files
+
+A session file outlives the session that wrote it: it is deleted when its list empties, so an interrupted session or a list left half-done strands one. On every session start the extension sweeps both session directories for this workspace and deletes a file when either is true:
+
+- pi no longer holds a transcript for that session, so nothing can resume it and read the tasks back
+- it has not been written to for `taskFileRetentionDays` days (default `14`)
+
+The running session is never swept however old its file is, `project` scope's shared `tasks.json` is never touched, and the orphan rule is skipped entirely when the session directory cannot be read. Set `taskFileRetentionDays` to `0` in `tasks-config.json` to keep everything forever:
+
+```json
+{
+  "taskFileRetentionDays": 0
+}
+```
 
 ### Auto-clear completed tasks
 
@@ -283,7 +311,7 @@ See [Customizing the task widget](CUSTOMIZING.md#where-config-lives) for worked 
 | `PI_TASKS` | `sprint-1` | Named shared list at `~/.pi/tasks/sprint-1.json` |
 | `PI_TASKS` | `/abs/path/tasks.json` | Explicit absolute file path |
 | `PI_TASKS` | `./tasks.json` | Relative path resolved from the session workspace |
-| *(unset)* | | Uses `taskScope` setting (default: `session`) |
+| *(unset)* | | Uses `taskScope` setting (default: `session-global`) |
 | `PI_TASKS_DEBUG` | `1` | Trace RPC communication (request/reply/timeout) and spawn errors to stderr |
 
 Named and explicit paths use a file-locked store with stale-lock detection — safe for multiple pi sessions coordinating on the same task list.
@@ -391,6 +419,7 @@ src/
 ├── auto-clear.ts       # Turn-based auto-clearing of completed tasks (AutoClearManager)
 ├── tasks-config.ts     # Global defaults and project override persistence
 ├── task-paths.ts       # Where session task files live, per taskScope
+├── task-cleanup.ts     # Retiring orphaned and aged-out session task files
 ├── task-glyphs.ts      # Glyph defaults and config validation
 ├── task-sort.ts        # Widget ordering: sort presets and sort specs
 ├── reminder-cadence.ts # Pure cadence logic for system-reminder injection

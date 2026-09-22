@@ -35,9 +35,14 @@ export function globalSessionTasksDir(cwd: string): string {
   return join(getAgentDir(), "tasks", "sessions", projectKey(cwd));
 }
 
+/** Where `session` collects one workspace's session files, inside the repository. */
+export function workspaceSessionTasksDir(cwd: string): string {
+  return join(cwd, ".pi", "tasks");
+}
+
 /** The in-workspace location, unchanged since session scope was introduced. */
 export function workspaceSessionTaskFile(cwd: string, sessionId: string): string {
-  return join(cwd, ".pi", "tasks", `tasks-${sessionId}.json`);
+  return join(workspaceSessionTasksDir(cwd), `tasks-${sessionId}.json`);
 }
 
 /**

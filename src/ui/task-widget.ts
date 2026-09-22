@@ -49,11 +49,19 @@ export type UICtx = {
 
 const DEFAULT_MAX_VISIBLE_TASKS = 10;
 
-/** Per-task runtime metrics (elapsed time, token usage). */
+/** Per-task runtime metrics (active time, token usage). */
 export interface TaskMetrics {
-  startedAt: number;
+  /** Active time already banked, excluding the stretch currently being timed. */
+  elapsedMs: number;
+  /** Start of the stretch being timed, or undefined while the clock is stopped. */
+  runningSince: number | undefined;
   inputTokens: number;
   outputTokens: number;
+}
+
+/** Active time a task has accumulated, including any stretch still running. */
+function elapsedOf(m: TaskMetrics): number {
+  return m.elapsedMs + (m.runningSince === undefined ? 0 : Date.now() - m.runningSince);
 }
 
 /** Format milliseconds as a human-readable duration (e.g., "2m 49s", "1h 3m"). */
@@ -88,6 +96,9 @@ export class TaskWidget {
   private tui: any | undefined;
   /** Whether the widget callback is currently registered. */
   private widgetRegistered = false;
+  /** Whether the agent is working. Starts true: the widget only exists because
+   *  tasks do, and every path that creates one runs inside a turn. */
+  private agentActive = true;
 
   constructor(
     private store: TaskStore,
@@ -107,7 +118,12 @@ export class TaskWidget {
     if (taskId && active) {
       this.activeTaskIds.add(taskId);
       if (!this.metrics.has(taskId)) {
-        this.metrics.set(taskId, { startedAt: Date.now(), inputTokens: 0, outputTokens: 0 });
+        this.metrics.set(taskId, {
+          elapsedMs: 0,
+          runningSince: this.agentActive ? Date.now() : undefined,
+          inputTokens: 0,
+          outputTokens: 0,
+        });
       }
       this.ensureTimer();
     } else if (taskId) {
@@ -128,15 +144,46 @@ export class TaskWidget {
     }
   }
 
+  /**
+   * The agent started or stopped working.
+   *
+   * A task left in_progress when the run ends is not being worked on: nothing is
+   * running, and the user is reading a finished screen. Elapsed time is banked at
+   * that point and timed again when the agent comes back, so the figure beside a
+   * task counts the time it was actually worked on rather than the time since it
+   * was started. The spinner stops with it — an animation is a claim that
+   * something is happening.
+   */
+  setAgentActive(active: boolean) {
+    if (active === this.agentActive) return;
+    this.agentActive = active;
+    for (const m of this.metrics.values()) {
+      if (active) {
+        m.runningSince = Date.now();
+      } else {
+        m.elapsedMs = elapsedOf(m);
+        m.runningSince = undefined;
+      }
+    }
+    this.update();
+  }
+
   /** Ensure the widget update timer is running. The spinner advances here and
    *  nowhere else: `update()` also runs on every task mutation and tool execution,
    *  so incrementing there tied the animation speed to how busy the agent was. */
   ensureTimer() {
-    if (!this.widgetInterval) {
+    if (!this.widgetInterval && this.agentActive) {
       this.widgetInterval = setInterval(() => {
         this.widgetFrame++;
         this.update();
       }, 150);
+    }
+  }
+
+  private stopTimer() {
+    if (this.widgetInterval) {
+      clearInterval(this.widgetInterval);
+      this.widgetInterval = undefined;
     }
   }
 
@@ -229,7 +276,7 @@ export class TaskWidget {
         const m = this.metrics.get(task.id);
         let stats = "";
         if (m) {
-          const elapsed = formatDuration(Date.now() - m.startedAt);
+          const elapsed = formatDuration(elapsedOf(m));
           const tokenParts: string[] = [];
           if (m.inputTokens > 0) tokenParts.push(`${glyphs.inputTokens} ${formatTokens(m.inputTokens)}`);
           if (m.outputTokens > 0) tokenParts.push(`${glyphs.outputTokens} ${formatTokens(m.outputTokens)}`);
@@ -273,10 +320,7 @@ export class TaskWidget {
         this.uiCtx.setWidget("tasks", undefined);
         this.widgetRegistered = false;
       }
-      if (this.widgetInterval) {
-        clearInterval(this.widgetInterval);
-        this.widgetInterval = undefined;
-      }
+      this.stopTimer();
       return;
     }
 
@@ -289,13 +333,12 @@ export class TaskWidget {
       }
     }
 
-    // Check if any task needs animation
-    const hasActiveSpinner = tasks.some(t => this.activeTaskIds.has(t.id) && t.status === "in_progress");
-    if (hasActiveSpinner) {
+    // Animate only what is actually moving: a task being executed, by an agent that
+    // has not stopped.
+    if (this.agentActive && tasks.some(t => this.activeTaskIds.has(t.id) && t.status === "in_progress")) {
       this.ensureTimer();
-    } else if (!hasActiveSpinner && this.widgetInterval) {
-      clearInterval(this.widgetInterval);
-      this.widgetInterval = undefined;
+    } else {
+      this.stopTimer();
     }
 
     // Transition: hidden → visible — register widget callback once
@@ -312,10 +355,7 @@ export class TaskWidget {
   }
 
   dispose() {
-    if (this.widgetInterval) {
-      clearInterval(this.widgetInterval);
-      this.widgetInterval = undefined;
-    }
+    this.stopTimer();
     if (this.uiCtx) {
       this.uiCtx.setWidget("tasks", undefined);
     }

@@ -18,6 +18,14 @@ export interface Task {
   updatedAt: number;
 }
 
+/** One task as requested, before the store assigns it an ID and timestamps. */
+export interface NewTask {
+  subject: string;
+  description: string;
+  activeForm?: string;
+  metadata?: Record<string, any>;
+}
+
 /** Serialized store format on disk. */
 export interface TaskStoreData {
   nextId: number;

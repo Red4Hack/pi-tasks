@@ -132,7 +132,14 @@ Sort order: pending first, then in-progress, then completed (each group by ID).
 
 ### `TaskGet`
 
-Get full details for a specific task.
+Get full details for one task, or several at once with `taskIds`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `taskId` | string | Task ID |
+| `taskIds` | string[] | Several task IDs to read in one call, in the order given |
+
+One of the two is required. With `taskIds`, each task is returned as its own block separated by a blank line, and a missing ID gets a `Task #N not found` line in its place.
 
 ```
 Task #2: Write unit tests
@@ -147,11 +154,12 @@ Shows owner (if set) and open (non-completed) dependency edges. Non-empty metada
 
 ### `TaskUpdate`
 
-Update task fields, status, metadata, and dependencies.
+Update task fields, status, metadata, and dependencies — for one task, or several at once with `updates`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `taskId` | string | Task ID (required) |
+| `updates` | object[] | Several updates to apply in one call, in order — each with `taskId` and the fields below |
+| `taskId` | string | Task ID (required unless `updates` is used) |
 | `status` | `pending` / `in_progress` / `completed` / `deleted` | New status |
 | `subject` | string | New title |
 | `description` | string | New description |
@@ -168,6 +176,22 @@ Update task fields, status, metadata, and dependencies.
 → Updated task #3 blocks (warning: cycle: #3 and #1 block each other)
 → Updated task #1 deleted
 ```
+
+The most common batch is finishing one task and starting the next:
+
+```json
+{ "updates": [
+  { "taskId": "1", "status": "completed" },
+  { "taskId": "2", "status": "in_progress" }
+] }
+```
+
+```
+→ Updated task #1 status
+  Updated task #2 status
+```
+
+Entries are applied in order, so a later one can build on an earlier one. An entry without a `taskId` rejects the whole batch before anything is changed; a `taskId` that does not exist only gets its own `Task #N not found` line, and the other entries still apply.
 
 Setting `status: "deleted"` permanently removes the task.
 

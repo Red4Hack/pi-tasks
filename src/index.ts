@@ -672,7 +672,7 @@ Skip it for a single straightforward step or a purely conversational request; ju
 Tasks start \`pending\`. Check TaskList first to avoid duplicates, and use TaskUpdate for status changes and dependencies.`,
     promptGuidelines: [
       "When working on complex multi-step tasks, use TaskCreate to track progress and TaskUpdate to update status.",
-      "Create a whole batch of tasks in a single TaskCreate call via `tasks`, not one call per task.",
+      "Batch instead of repeating a call: TaskCreate takes `tasks`, TaskUpdate takes `updates` (e.g. complete one task and start the next), TaskGet takes `taskIds`.",
       "Mark tasks as in_progress before starting work and completed when done.",
       "Use TaskList to check for available work after completing a task.",
     ],
@@ -782,49 +782,43 @@ TaskGet returns one task's full description.`,
   pi.registerTool({
     name: "TaskGet",
     label: "TaskGet",
-    description: `Read one task in full: its subject, description, status, owner, metadata, and both sides of its dependencies.
+    description: `Read tasks in full: subject, description, status, owner, metadata, and both sides of their dependencies. Pass \`taskIds\` to read several in one call.
 
 Use it before starting a task, to get the requirements and confirm nothing still blocks it. TaskList gives the whole list in summary form.`,
     parameters: Type.Object({
-      taskId: Type.String({ description: "The ID of the task to retrieve" }),
+      taskId: Type.Optional(Type.String({ description: "The ID of the task to retrieve. Omit when using `taskIds`." })),
+      taskIds: Type.Optional(Type.Array(Type.String(), { description: "Several task IDs to read at once, in the order given" })),
     }),
 
     execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const task = store.get(params.taskId);
-      if (!task) return Promise.resolve(textResult(`Task not found`));
+      // Two shapes, one path, as in TaskCreate — and an empty `taskIds` is reported
+      // rather than answered with nothing.
+      const ids = params.taskIds?.length ? params.taskIds : params.taskId ? [params.taskId] : [];
+      if (ids.length === 0) return Promise.resolve(textResult("TaskGet needs a taskId, or a `taskIds` array of them."));
 
-      // Unescape literal \n sequences the LLM may have double-escaped in JSON
-      const desc = task.description.replace(/\\n/g, "\n");
+      const blocks = ids.map(id => {
+        const task = store.get(id);
+        if (!task) return `Task #${id} not found`;
 
-      const lines: string[] = [
-        `Task #${task.id}: ${task.subject}`,
-        `Status: ${task.status}`,
-      ];
-      if (task.owner) {
-        lines.push(`Owner: ${task.owner}`);
-      }
-      lines.push(`Description: ${desc}`);
+        // Unescape literal \n sequences the LLM may have double-escaped in JSON
+        const desc = task.description.replace(/\\n/g, "\n");
 
-      if (task.blockedBy.length > 0) {
+        const lines: string[] = [`Task #${task.id}: ${task.subject}`, `Status: ${task.status}`];
+        if (task.owner) lines.push(`Owner: ${task.owner}`);
+        lines.push(`Description: ${desc}`);
+
         const openBlockers = task.blockedBy.filter(bid => {
           const blocker = store.get(bid);
           return blocker && blocker.status !== "completed";
         });
-        if (openBlockers.length > 0) {
-          lines.push(`Blocked by: ${openBlockers.map(id => "#" + id).join(", ")}`);
-        }
-      }
-      if (task.blocks.length > 0) {
-        lines.push(`Blocks: ${task.blocks.map(id => "#" + id).join(", ")}`);
-      }
+        if (openBlockers.length > 0) lines.push(`Blocked by: ${openBlockers.map(bid => "#" + bid).join(", ")}`);
+        if (task.blocks.length > 0) lines.push(`Blocks: ${task.blocks.map(bid => "#" + bid).join(", ")}`);
+        if (Object.keys(task.metadata).length > 0) lines.push(`Metadata: ${JSON.stringify(task.metadata)}`);
 
-      // Show metadata if non-empty
-      const metaKeys = Object.keys(task.metadata);
-      if (metaKeys.length > 0) {
-        lines.push(`Metadata: ${JSON.stringify(task.metadata)}`);
-      }
+        return lines.join("\n");
+      });
 
-      return Promise.resolve(textResult(lines.join("\n")));
+      return Promise.resolve(textResult(blocks.join("\n\n")));
     },
   });
 
@@ -832,10 +826,28 @@ Use it before starting a task, to get the requirements and confirm nothing still
   // Tool 4: TaskUpdate
   // ──────────────────────────────────────────────────
 
+  /** What one TaskUpdate entry can change — shared by the single-task shape and each
+   *  entry of `updates`, so the two cannot drift apart. */
+  const taskUpdateFields = {
+    status: Type.Optional(Type.Unsafe<"pending" | "in_progress" | "completed" | "deleted">({
+      type: "string",
+      enum: ["pending", "in_progress", "completed", "deleted"],
+      description: "New status for the task",
+    })),
+    subject: Type.Optional(Type.String({ description: "New subject for the task" })),
+    description: Type.Optional(Type.String({ description: "New description for the task" })),
+    activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress" })),
+    owner: Type.Optional(Type.String({ description: "New owner for the task" })),
+    metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Metadata keys to merge into the task. Set a key to null to delete it." })),
+    addBlocks: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that this task blocks" })),
+    addBlockedBy: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that block this task" })),
+  };
+
   pi.registerTool({
     name: "TaskUpdate",
     label: "TaskUpdate",
-    description: `Update one task: its status, its details, or its dependencies.
+    description: `Update tasks: their status, details, or dependencies. Pass \`updates\` to change several tasks in one call — e.g. finish one and start the next:
+\`{"updates": [{"taskId": "1", "status": "completed"}, {"taskId": "2", "status": "in_progress"}]}\`
 
 ## Status
 
@@ -855,46 +867,46 @@ Use it before starting a task, to get the requirements and confirm nothing still
 
 Read the task with TaskGet first when you are unsure of its current state.`,
     parameters: Type.Object({
-      taskId: Type.String({ description: "The ID of the task to update" }),
-      status: Type.Optional(Type.Unsafe<"pending" | "in_progress" | "completed" | "deleted">({
-        type: "string",
-        enum: ["pending", "in_progress", "completed", "deleted"],
-        description: "New status for the task",
-      })),
-      subject: Type.Optional(Type.String({ description: "New subject for the task" })),
-      description: Type.Optional(Type.String({ description: "New description for the task" })),
-      activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress" })),
-      owner: Type.Optional(Type.String({ description: "New owner for the task" })),
-      metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Metadata keys to merge into the task. Set a key to null to delete it." })),
-      addBlocks: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that this task blocks" })),
-      addBlockedBy: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that block this task" })),
+      taskId: Type.Optional(Type.String({ description: "The ID of the task to update. Omit when using `updates`." })),
+      ...taskUpdateFields,
+      updates: Type.Optional(Type.Array(
+        Type.Object({ taskId: Type.String({ description: "The ID of the task to update" }), ...taskUpdateFields }),
+        { description: "Several updates to apply at once, in order. Preferred over one call per task." },
+      )),
     }),
 
     execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const { taskId, ...fields } = params;
-      const { task, changedFields, warnings } = store.update(taskId, fields);
-
-      if (changedFields.length === 0 && !task) {
-        return Promise.resolve(textResult(`Task #${taskId} not found`));
+      // One path for both shapes, as in TaskCreate. Every entry is checked before any is
+      // applied, so a malformed batch changes nothing. Past that the entries are
+      // independent: a missing task gets its own line rather than undoing the others.
+      const { updates, ...single } = params;
+      const requested: Array<typeof single> = updates?.length ? updates : [single];
+      const entries = requested.filter((u): u is typeof single & { taskId: string } => Boolean(u.taskId));
+      if (entries.length < requested.length) {
+        return Promise.resolve(textResult("TaskUpdate needs a taskId — pass it directly, or on each entry of `updates`."));
       }
 
-      // Update widget active task tracking
-      if (fields.status === "in_progress") {
-        widget.setActiveTask(taskId);
-        autoClear.resetBatchCountdown();
-      } else if (fields.status === "pending") {
-        autoClear.resetBatchCountdown();
-      } else if (fields.status === "completed" || fields.status === "deleted") {
-        widget.setActiveTask(taskId, false);
-        if (fields.status === "completed") autoClear.trackCompletion(taskId, cadence.currentTurn);
-      }
+      const lines = entries.map(({ taskId, ...fields }) => {
+        const { task, changedFields, warnings } = store.update(taskId, fields);
+        if (changedFields.length === 0 && !task) return `Task #${taskId} not found`;
+
+        // Update widget active task tracking
+        if (fields.status === "in_progress") {
+          widget.setActiveTask(taskId);
+          autoClear.resetBatchCountdown();
+        } else if (fields.status === "pending") {
+          autoClear.resetBatchCountdown();
+        } else if (fields.status === "completed" || fields.status === "deleted") {
+          widget.setActiveTask(taskId, false);
+          if (fields.status === "completed") autoClear.trackCompletion(taskId, cadence.currentTurn);
+        }
+
+        const msg = `Updated task #${taskId} ${changedFields.join(", ")}`;
+        return warnings.length > 0 ? `${msg} (warning: ${warnings.join("; ")})` : msg;
+      });
 
       widget.update();
-      let msg = `Updated task #${taskId} ${changedFields.join(", ")}`;
-      if (warnings.length > 0) {
-        msg += ` (warning: ${warnings.join("; ")})`;
-      }
-      return Promise.resolve(textResult(msg));
+      return Promise.resolve(textResult(lines.join("\n")));
     },
   });
 

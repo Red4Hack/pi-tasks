@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **The widget's elapsed time stops when the agent does.** It was derived from the task's start time, so a task left `in_progress` on a finished screen kept counting — and reported minutes of "work" that were really you reading the answer. The clock is now banked when the agent settles and resumes when it starts again, and the spinner stops with it.
+- **`typebox` is now a peer dependency (`*`) instead of a dependency.** Pi provides it to extensions; a bundled copy could bypass the extension loader and load a second, incompatible TypeBox runtime.
 
 ## [0.9.0] - 2026-08-24
 

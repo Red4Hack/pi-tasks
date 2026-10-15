@@ -48,6 +48,8 @@ function scriptedUI(script: Answer[]) {
     setWidget: vi.fn(),
     setStatus: vi.fn(),
     notify: vi.fn(),
+    setEditorComponent: vi.fn(),
+    getEditorComponent: vi.fn(),
   };
 
   return { ui, selects, inputs, customCalls };

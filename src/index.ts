@@ -615,6 +615,9 @@ export default function (pi: ExtensionAPI) {
     // Those tasks are shown for review, but the run that produced them ended with the
     // session before this one — so the next batch must not be added to them either.
     if (keepsTasks) autoClear.onRunEnded();
+    // showPersistedTasks only updates when there are tasks; the compact layout has to
+    // swap the editor in now, before the prompt history it would discard builds up.
+    widget.update();
 
     if (pendingWarning) {
       ctx.ui.notify(pendingWarning, "warning");
@@ -1283,8 +1286,13 @@ Read the task with TaskGet first when you are unsure of its current state.`,
         return viewTasks();
       };
 
+      // The layout moves tasks between the list and the editor border, and nothing
+      // else redraws on a settings change, so the widget is refreshed on the way out.
       const settingsMenu = (): Promise<void> =>
-        openSettingsMenu(ui, cfg, mainMenu, AUTO_CLEAR_DELAY, ctx.cwd);
+        openSettingsMenu(ui, cfg, () => {
+          widget.update();
+          return mainMenu();
+        }, AUTO_CLEAR_DELAY, ctx.cwd);
 
       const createTask = async (): Promise<void> => {
         const subject = await ui.input("Task subject");

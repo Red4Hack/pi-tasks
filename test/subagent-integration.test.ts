@@ -1055,7 +1055,7 @@ describe("Widget agent ID display", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     store = new TaskStore();
-    widget = new TaskWidget(store);
+    widget = new TaskWidget(store, { layout: "list" });
     ui = mockUICtx();
     widget.setUICtx(ui.ctx);
   });

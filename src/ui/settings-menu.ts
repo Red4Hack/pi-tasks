@@ -57,6 +57,18 @@ export async function openSettingsMenu(
         values: ["on", "off"],
       },
       {
+        id: "layout",
+        label: "Task layout",
+        description:
+          "compact (default): one summary line (progress and the task in progress) sits on the " +
+          "editor's bottom border and takes no extra space. " +
+          "list: every task is listed above the editor. " +
+          "Compact needs pi's default editor; with another extension's editor installed the " +
+          "list is shown.",
+        currentValue: cfg.layout ?? "compact",
+        values: ["compact", "list"],
+      },
+      {
         id: "collapseCompleted",
         label: "Collapse completed tasks",
         description:
@@ -132,6 +144,10 @@ export async function openSettingsMenu(
         }
         if (id === "autoClearCompleted") {
           cfg.autoClearCompleted = newValue as TasksConfig["autoClearCompleted"];
+          saveTasksConfig(cfg, cwd);
+        }
+        if (id === "layout") {
+          cfg.layout = newValue as TasksConfig["layout"];
           saveTasksConfig(cfg, cwd);
         }
         if (id === "collapseCompleted") {

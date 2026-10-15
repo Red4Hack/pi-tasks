@@ -13,6 +13,8 @@ function mockCtx() {
       setWidget: vi.fn(),
       setStatus: vi.fn(),
       notify: vi.fn(),
+      setEditorComponent: vi.fn(),
+      getEditorComponent: vi.fn(),
     },
   };
 }

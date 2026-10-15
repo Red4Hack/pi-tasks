@@ -14,7 +14,8 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { resolveTaskGlyphs } from "../task-glyphs.js";
 import type { TaskStore } from "../task-store.js";
-import type { TasksConfig } from "../tasks-config.js";
+import type { TaskLayout, TasksConfig } from "../tasks-config.js";
+import { TaskSummaryEditor } from "./summary-editor.js";
 
 // ---- Truncation ----
 
@@ -38,8 +39,19 @@ export type Theme = {
   strikethrough(text: string): string;
 };
 
+type SummaryEditorArgs = ConstructorParameters<typeof TaskSummaryEditor>;
+type SummaryEditorFactory = (
+  tui: SummaryEditorArgs[0],
+  theme: SummaryEditorArgs[1],
+  keybindings: SummaryEditorArgs[2],
+) => TaskSummaryEditor;
+
 export type UICtx = {
+  readonly theme: Theme;
   setStatus(key: string, text: string | undefined): void;
+  setEditorComponent(factory: SummaryEditorFactory | undefined): void;
+  /** Only ever compared by identity, to tell our editor from another extension's. */
+  getEditorComponent(): object | undefined;
   setWidget(
     key: string,
     content: undefined | ((tui: any, theme: Theme) => { render(): string[]; invalidate(): void }),
@@ -99,6 +111,9 @@ export class TaskWidget {
   /** Whether the agent is working. Starts true: the widget only exists because
    *  tasks do, and every path that creates one runs inside a turn. */
   private agentActive = true;
+  /** The editor this widget installed for the compact layout, kept to tell it apart
+   *  from one another extension installed. */
+  private summaryFactory: SummaryEditorFactory | undefined;
 
   constructor(
     private store: TaskStore,
@@ -111,6 +126,12 @@ export class TaskWidget {
 
   setUICtx(ctx: UICtx) {
     this.uiCtx = ctx;
+  }
+
+  /** Narrowed rather than defaulted, like `hiddenAt`: config is hand-editable JSON, and
+   *  an unrecognised value must land on the default instead of on no layout at all. */
+  private layout(): TaskLayout {
+    return this.config.layout === "list" ? "list" : "compact";
   }
 
   /** Add or remove a task from the active spinner set. */
@@ -309,9 +330,73 @@ export class TaskWidget {
     return lines;
   }
 
+  /** Make the prompt editor the one that draws the summary. False when it cannot be:
+   *  another extension's editor is installed, or the host has no editor to replace. */
+  private ensureSummaryEditor(ui: UICtx): boolean {
+    const current = ui.getEditorComponent();
+    if (current !== undefined) return current === this.summaryFactory;
+    const factory: SummaryEditorFactory = (tui, theme, keybindings) => {
+      this.tui = tui;
+      return new TaskSummaryEditor(tui, theme, keybindings, maxWidth => this.compactLabel(maxWidth));
+    };
+    ui.setEditorComponent(factory);
+    if (ui.getEditorComponent() !== factory) return false;
+    this.summaryFactory = factory;
+    return true;
+  }
+
+  /** The summary for the editor border, or undefined to leave the border plain. Guarded
+   *  like renderWidget: this runs inside the editor's render, so a throw would take
+   *  the prompt down with it. */
+  private compactLabel(maxWidth: number): string | undefined {
+    if (!this.uiCtx || this.layout() !== "compact" || maxWidth <= 0) return undefined;
+    try {
+      return this.buildSummary(this.uiCtx.theme, maxWidth);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** One line: progress, then the task being worked on — `● 2/5 · ✳ #3 Doing it… (2m 10s)`. */
+  private buildSummary(theme: Theme, maxWidth: number): string | undefined {
+    const glyphs = resolveTaskGlyphs(this.config.glyphs);
+    const tasks = this.store.list(this.config.sortOrder ?? "id");
+    if (tasks.length === 0) return undefined;
+
+    const done = tasks.filter(t => t.status === "completed").length;
+    const inProgress = tasks.filter(t => t.status === "in_progress");
+    const focus = inProgress.find(t => this.activeTaskIds.has(t.id)) ?? inProgress[0] ??
+      tasks.find(t => t.status === "pending");
+
+    const sep = theme.fg("dim", glyphs.statsSeparator);
+    let text = theme.fg("accent", `${glyphs.header} ${done}/${tasks.length}`);
+    if (!focus) {
+      text += ` ${sep} ${theme.fg("success", glyphs.completed)} ${theme.fg("dim", "all done")}`;
+    } else {
+      const active = this.activeTaskIds.has(focus.id) && focus.status === "in_progress";
+      const glyph = active
+        ? theme.fg("accent", glyphs.spinner[this.widgetFrame % glyphs.spinner.length])
+        : focus.status === "in_progress"
+        ? theme.fg("accent", glyphs.inProgress)
+        : glyphs.pending;
+      const label = active ? (focus.activeForm || focus.subject) + glyphs.trailingEllipsis : focus.subject;
+      text += ` ${sep} ${glyph} ${theme.fg("accent", `#${focus.id} ${label}`)}`;
+      const metrics = active ? this.metrics.get(focus.id) : undefined;
+      if (metrics) text += ` ${theme.fg("dim", `(${formatDuration(elapsedOf(metrics))})`)}`;
+      if (focus.status === "in_progress" && inProgress.length > 1) {
+        text += ` ${theme.fg("dim", `+${inProgress.length - 1}`)}`;
+      }
+    }
+    return truncateToWidth(text, maxWidth, glyphs.truncation);
+  }
+
   /** Force an immediate widget update. */
   update() {
     if (!this.uiCtx) return;
+    // Settled before the empty-list return: swapping the editor discards its prompt
+    // history, so it is done as early as the layout is known rather than when the
+    // first task appears.
+    const compact = this.layout() === "compact" && this.ensureSummaryEditor(this.uiCtx);
     const tasks = this.store.list();
 
     // Transition: visible → hidden
@@ -321,6 +406,7 @@ export class TaskWidget {
         this.widgetRegistered = false;
       }
       this.stopTimer();
+      if (compact) this.tui?.requestRender(); // wipes the summary
       return;
     }
 
@@ -341,6 +427,16 @@ export class TaskWidget {
       this.stopTimer();
     }
 
+    // The summary lives on the editor, so the list widget has nothing to show.
+    if (compact) {
+      if (this.widgetRegistered) {
+        this.uiCtx.setWidget("tasks", undefined);
+        this.widgetRegistered = false;
+      }
+      this.tui?.requestRender();
+      return;
+    }
+
     // Transition: hidden → visible — register widget callback once
     if (!this.widgetRegistered) {
       this.uiCtx.setWidget("tasks", (tui, theme) => {
@@ -358,7 +454,11 @@ export class TaskWidget {
     this.stopTimer();
     if (this.uiCtx) {
       this.uiCtx.setWidget("tasks", undefined);
+      if (this.summaryFactory && this.uiCtx.getEditorComponent() === this.summaryFactory) {
+        this.uiCtx.setEditorComponent(undefined);
+      }
     }
+    this.summaryFactory = undefined;
     this.widgetRegistered = false;
     this.tui = undefined;
   }

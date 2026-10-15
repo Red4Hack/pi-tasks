@@ -98,6 +98,10 @@ export function mockCtx(cwd = process.cwd()) {
       setWidget: vi.fn(),
       setStatus: vi.fn(),
       notify: vi.fn(),
+      // A host with no editor to replace, as in print mode: the compact layout, the
+      // default, falls back to the list there.
+      setEditorComponent: vi.fn(),
+      getEditorComponent: vi.fn(),
     },
   };
 }

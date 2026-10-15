@@ -17,17 +17,26 @@ function mockUICtx() {
   const state: {
     widgets: Map<string, any>;
     statuses: Map<string, string | undefined>;
+    editor: any;
   } = {
     widgets: new Map(),
     statuses: new Map(),
+    editor: undefined,
   };
 
   const ctx: UICtx = {
+    theme: mockTheme(),
     setWidget(key, content, options) {
       state.widgets.set(key, { content, options });
     },
     setStatus(key, text) {
       state.statuses.set(key, text);
+    },
+    setEditorComponent(factory) {
+      state.editor = factory;
+    },
+    getEditorComponent() {
+      return state.editor;
     },
   };
 
@@ -52,7 +61,7 @@ describe("TaskWidget", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     store = new TaskStore();
-    widget = new TaskWidget(store);
+    widget = new TaskWidget(store, { layout: "list" });
     ui = mockUICtx();
     widget.setUICtx(ui.ctx);
   });
@@ -187,7 +196,7 @@ describe("TaskWidget", () => {
   });
 
   it("respects maxVisible config", () => {
-    widget = new TaskWidget(store, { maxVisible: 5 });
+    widget = new TaskWidget(store, { layout: "list", maxVisible: 5 });
     widget.setUICtx(ui.ctx);
     for (let i = 0; i < 15; i++) {
       store.create(`Task ${i + 1}`, "Desc");
@@ -201,7 +210,7 @@ describe("TaskWidget", () => {
   });
 
   it("shows all tasks when limit exceeds task count", () => {
-    widget = new TaskWidget(store, { maxVisible: 10 });
+    widget = new TaskWidget(store, { layout: "list", maxVisible: 10 });
     widget.setUICtx(ui.ctx);
     for (let i = 0; i < 3; i++) {
       store.create(`Task ${i + 1}`, "Desc");
@@ -215,7 +224,7 @@ describe("TaskWidget", () => {
   });
 
   it("shows all tasks when showAll is true even with maxVisible set", () => {
-    widget = new TaskWidget(store, { showAll: true, maxVisible: 5 });
+    widget = new TaskWidget(store, { layout: "list", showAll: true, maxVisible: 5 });
     widget.setUICtx(ui.ctx);
     for (let i = 0; i < 15; i++) {
       store.create(`Task ${i + 1}`, "Desc");
@@ -229,7 +238,7 @@ describe("TaskWidget", () => {
   });
 
   it("truncates from top when hiddenAt is 'top'", () => {
-    widget = new TaskWidget(store, { sortOrder: "status", hiddenAt: "top", showAll: false, maxVisible: 5 });
+    widget = new TaskWidget(store, { layout: "list", sortOrder: "status", hiddenAt: "top", showAll: false, maxVisible: 5 });
     widget.setUICtx(ui.ctx);
     // 4 completed, 2 in_progress, 2 pending = 8 total, limit 5
     for (let i = 1; i <= 4; i++) store.create(`Done ${i}`, "Desc");
@@ -255,7 +264,7 @@ describe("TaskWidget", () => {
   });
 
   it("truncates from bottom when hiddenAt holds an unrecognised value", () => {
-    widget = new TaskWidget(store, { hiddenAt: "middle" as "top", maxVisible: 3 });
+    widget = new TaskWidget(store, { layout: "list", hiddenAt: "middle" as "top", maxVisible: 3 });
     widget.setUICtx(ui.ctx);
     for (let i = 1; i <= 5; i++) store.create(`Task ${i}`, "Desc");
     widget.update();
@@ -267,7 +276,7 @@ describe("TaskWidget", () => {
   });
 
   it("truncates from bottom by default", () => {
-    widget = new TaskWidget(store, { maxVisible: 3 });
+    widget = new TaskWidget(store, { layout: "list", maxVisible: 3 });
     widget.setUICtx(ui.ctx);
     for (let i = 1; i <= 5; i++) store.create(`Task ${i}`, "Desc");
     widget.update();
@@ -291,7 +300,7 @@ describe("TaskWidget", () => {
     }
 
     it("replaces completed tasks with a single count line", () => {
-      widget = new TaskWidget(store, { collapseCompleted: true });
+      widget = new TaskWidget(store, { layout: "list", collapseCompleted: true });
       widget.setUICtx(ui.ctx);
       seed();
       widget.update();
@@ -305,7 +314,7 @@ describe("TaskWidget", () => {
     });
 
     it("leaves the header counts untouched", () => {
-      widget = new TaskWidget(store, { collapseCompleted: true });
+      widget = new TaskWidget(store, { layout: "list", collapseCompleted: true });
       widget.setUICtx(ui.ctx);
       seed();
       widget.update();
@@ -314,7 +323,7 @@ describe("TaskWidget", () => {
     });
 
     it("applies the visible limit to the remaining tasks only", () => {
-      widget = new TaskWidget(store, { collapseCompleted: true, maxVisible: 2 });
+      widget = new TaskWidget(store, { layout: "list", collapseCompleted: true, maxVisible: 2 });
       widget.setUICtx(ui.ctx);
       seed();
       widget.update();
@@ -330,7 +339,7 @@ describe("TaskWidget", () => {
     });
 
     it("emits no count line when nothing is completed", () => {
-      widget = new TaskWidget(store, { collapseCompleted: true });
+      widget = new TaskWidget(store, { layout: "list", collapseCompleted: true });
       widget.setUICtx(ui.ctx);
       for (let i = 1; i <= 3; i++) store.create(`Task ${i}`, "Desc");
       widget.update();
@@ -341,7 +350,7 @@ describe("TaskWidget", () => {
     });
 
     it("stays visible as header plus count line when everything is completed", () => {
-      widget = new TaskWidget(store, { collapseCompleted: true });
+      widget = new TaskWidget(store, { layout: "list", collapseCompleted: true });
       widget.setUICtx(ui.ctx);
       for (let i = 1; i <= 3; i++) store.create(`Task ${i}`, "Desc");
       for (let i = 1; i <= 3; i++) store.update(String(i), { status: "completed" });
@@ -353,7 +362,7 @@ describe("TaskWidget", () => {
     });
 
     it("lists completed tasks individually when off", () => {
-      widget = new TaskWidget(store, { collapseCompleted: false });
+      widget = new TaskWidget(store, { layout: "list", collapseCompleted: false });
       widget.setUICtx(ui.ctx);
       seed();
       widget.update();
@@ -365,7 +374,7 @@ describe("TaskWidget", () => {
   });
 
   it("sorts tasks by status when sortOrder is 'status'", () => {
-    widget = new TaskWidget(store, { sortOrder: "status" });
+    widget = new TaskWidget(store, { layout: "list", sortOrder: "status" });
     widget.setUICtx(ui.ctx);
     store.create("Pending task", "Desc");           // #1
     store.create("Completed task", "Desc");         // #2
@@ -382,7 +391,7 @@ describe("TaskWidget", () => {
   });
 
   it("sorts active work first when sortOrder is 'active'", () => {
-    widget = new TaskWidget(store, { sortOrder: "active" });
+    widget = new TaskWidget(store, { layout: "list", sortOrder: "active" });
     widget.setUICtx(ui.ctx);
     store.create("Pending task", "Desc");            // #1
     store.create("Completed task", "Desc");          // #2
@@ -398,7 +407,7 @@ describe("TaskWidget", () => {
   });
 
   it("honours a custom sort spec from config", () => {
-    widget = new TaskWidget(store, { sortOrder: [{ field: "id", direction: "desc" }] });
+    widget = new TaskWidget(store, { layout: "list", sortOrder: [{ field: "id", direction: "desc" }] });
     widget.setUICtx(ui.ctx);
     for (let i = 1; i <= 3; i++) store.create(`Task ${i}`, "Desc");
     widget.update();
@@ -422,7 +431,7 @@ describe("TaskWidget", () => {
   });
 
   it("keeps ID order when sortOrder is 'id'", () => {
-    widget = new TaskWidget(store, { sortOrder: "id" });
+    widget = new TaskWidget(store, { layout: "list", sortOrder: "id" });
     widget.setUICtx(ui.ctx);
     store.create("Pending task", "Desc");           // #1
     store.create("Completed task", "Desc");         // #2
@@ -592,7 +601,7 @@ describe("formatDuration (via widget rendering)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     store = new TaskStore();
-    widget = new TaskWidget(store);
+    widget = new TaskWidget(store, { layout: "list" });
     ui = mockUICtx();
     widget.setUICtx(ui.ctx);
   });
@@ -686,7 +695,7 @@ describe("configurable glyphs", () => {
   function seed(glyphs: TasksConfig["glyphs"], config: TasksConfig = {}) {
     store = new TaskStore();
     ui = mockUICtx();
-    widget = new TaskWidget(store, { ...config, glyphs });
+    widget = new TaskWidget(store, { layout: "list", ...config, glyphs });
     widget.setUICtx(ui.ctx);
     store.create("Done task", "Desc");
     store.create("Open task", "Desc");
@@ -702,7 +711,7 @@ describe("configurable glyphs", () => {
   function clippedAt20(glyphs: TasksConfig["glyphs"]) {
     store = new TaskStore();
     ui = mockUICtx();
-    widget = new TaskWidget(store, { glyphs });
+    widget = new TaskWidget(store, { layout: "list", glyphs });
     widget.setUICtx(ui.ctx);
     store.create("A subject far too long for this terminal", "Desc");
     widget.update();
@@ -847,7 +856,7 @@ describe("spinner animation timing", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     store = new TaskStore();
-    widget = new TaskWidget(store);
+    widget = new TaskWidget(store, { layout: "list" });
     ui = mockUICtx();
     widget.setUICtx(ui.ctx);
     store.create("Long job", "d", "Working");
@@ -900,7 +909,7 @@ describe("elapsed time across the agent stopping and starting", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     store = new TaskStore();
-    widget = new TaskWidget(store);
+    widget = new TaskWidget(store, { layout: "list" });
     ui = mockUICtx();
     widget.setUICtx(ui.ctx);
     store.create("Long job", "d", "Working");
@@ -974,5 +983,154 @@ describe("elapsed time across the agent stopping and starting", () => {
     widget.setAgentActive(false);
 
     expect(activeLine()).toContain("(5s)");
+  });
+});
+
+describe("TaskWidget compact layout", () => {
+  let store: TaskStore;
+  let config: TasksConfig;
+  let widget: TaskWidget;
+  let ui: ReturnType<typeof mockUICtx>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    store = new TaskStore();
+    config = {}; // compact is the default
+    widget = new TaskWidget(store, config);
+    ui = mockUICtx();
+    widget.setUICtx(ui.ctx);
+  });
+
+  afterEach(() => {
+    widget.dispose();
+    vi.useRealTimers();
+  });
+
+  const id = (s: string) => s;
+  const plainBorder = "─".repeat(80);
+
+  /** Build the installed editor the way pi does and return its bottom border. */
+  function border(): string {
+    const tui = { terminal: { rows: 40, columns: 80 }, requestRender() {} };
+    const theme = {
+      borderColor: id,
+      selectList: { selectedPrefix: id, selectedText: id, description: id, scrollInfo: id, noMatch: id },
+    };
+    const editor = ui.state.editor(tui, theme, { matches: () => false });
+    const lines: string[] = editor.render(80);
+    return lines[lines.length - 1];
+  }
+
+  const listShown = () => ui.state.widgets.get("tasks")?.content !== undefined;
+
+  it("installs the summary editor instead of the list", () => {
+    store.create("A", "d");
+    widget.update();
+
+    expect(ui.state.editor).toBeTypeOf("function");
+    expect(listShown()).toBe(false);
+  });
+
+  it("installs the editor before any task exists", () => {
+    widget.update();
+
+    expect(ui.state.editor).toBeTypeOf("function");
+    expect(border()).toBe(plainBorder);
+  });
+
+  it("summarises progress and the active task on the border", () => {
+    store.create("First", "d");
+    store.create("Second", "d", "Doing second");
+    store.update("1", { status: "completed" });
+    store.update("2", { status: "in_progress" });
+    widget.setActiveTask("2");
+
+    expect(border()).toContain("● 1/2 · ✳ #2 Doing second… (0s)");
+  });
+
+  it("counts the other tasks in progress", () => {
+    store.create("A", "d");
+    store.create("B", "d");
+    store.update("1", { status: "in_progress" });
+    store.update("2", { status: "in_progress" });
+    widget.update();
+
+    expect(border()).toContain("◼ #1 A +1");
+  });
+
+  it("says so when everything is done", () => {
+    store.create("A", "d");
+    store.update("1", { status: "completed" });
+    widget.update();
+
+    expect(border()).toContain("● 1/1 · ✔ all done");
+  });
+
+  it("falls back to the list when another extension owns the editor", () => {
+    const foreign = () => ({});
+    ui.state.editor = foreign;
+    store.create("A", "d");
+    widget.update();
+
+    expect(ui.state.editor).toBe(foreign);
+    expect(listShown()).toBe(true);
+  });
+
+  it("falls back to the list when the host keeps no editor", () => {
+    ui.ctx.setEditorComponent = () => {};
+    store.create("A", "d");
+    widget.update();
+
+    expect(listShown()).toBe(true);
+  });
+
+  it("follows the configured layout when it changes", () => {
+    store.create("A", "d");
+    widget.update();
+
+    config.layout = "list";
+    widget.update();
+    expect(listShown()).toBe(true);
+    expect(border()).toBe(plainBorder);
+
+    config.layout = "compact";
+    widget.update();
+    expect(listShown()).toBe(false);
+    expect(border()).toContain("0/1");
+  });
+
+  it("never installs an editor under layout \"list\"", () => {
+    config.layout = "list";
+    store.create("A", "d");
+    widget.update();
+
+    expect(ui.state.editor).toBeUndefined();
+    expect(listShown()).toBe(true);
+  });
+
+  it("treats an unrecognised layout as the default", () => {
+    config.layout = "sideways" as TasksConfig["layout"];
+    store.create("A", "d");
+    widget.update();
+
+    expect(ui.state.editor).toBeTypeOf("function");
+    expect(listShown()).toBe(false);
+  });
+
+  it("releases its editor on dispose", () => {
+    widget.update();
+    widget.dispose();
+
+    expect(ui.state.editor).toBeUndefined();
+  });
+
+  it("leaves another extension's editor alone on dispose", () => {
+    const foreign = () => ({});
+    ui.state.editor = foreign;
+    store.create("A", "d");
+    widget.update();
+    widget.dispose();
+
+    expect(ui.state.editor).toBe(foreign);
   });
 });

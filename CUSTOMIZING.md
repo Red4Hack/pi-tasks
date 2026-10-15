@@ -44,6 +44,7 @@ that project sorts by `active` (from global) and shows 5 tasks (from project).
 | Setting | Values | Default | Behaviour |
 |---------|--------|---------|-----------|
 | `sortOrder` | a [preset](#sort-presets) or a [sort spec](#writing-your-own-sort-order) | `id` | The order tasks appear in |
+| `layout` | `compact` / `list` | `compact` | `compact` shows one summary line on the editor's bottom border, so the widget costs no vertical space. `list` shows every task above the editor instead. `compact` needs pi's default editor; with another extension's editor installed, the list is shown |
 | `collapseCompleted` | `true` / `false` | `false` | Replace completed tasks with a single `✔ N completed` line at the bottom. When off, they stay in the list, dimmed and struck through |
 | `maxVisible` | `5`–`100` | `10` | Cap on task lines (ignored when `showAll` is on) |
 | `showAll` | `true` / `false` | `false` | Show every listed task regardless of `maxVisible` |

@@ -17,6 +17,10 @@ import type { TaskSortOrder } from "./task-sort.js";
  *  repository the agent was ever pointed at would otherwise grow a `.pi/tasks/`. */
 export const DEFAULT_TASK_SCOPE = "session-global";
 
+/** `list` draws every task above the editor; `compact` draws one summary line on the
+ *  editor's own border, which costs no vertical space. */
+export type TaskLayout = "list" | "compact";
+
 export interface TasksConfig {
   // "session" keeps per-session files in the workspace; "session-global" keeps them
   // under the agent directory instead. Same scope, different home — see task-paths.ts.
@@ -25,6 +29,7 @@ export interface TasksConfig {
   taskFileRetentionDays?: number;        // default: 14 (see task-cleanup.ts)
   autoCascade?: boolean;   // default: false
   autoClearCompleted?: "never" | "on_list_complete" | "on_task_complete";  // default: "on_list_complete"
+  layout?: TaskLayout;                   // default: "compact"
   collapseCompleted?: boolean;           // default: false
   showAll?: boolean;                     // default: false
   maxVisible?: number;                   // default: 10

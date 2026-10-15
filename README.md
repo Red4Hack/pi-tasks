@@ -13,7 +13,7 @@ https://github.com/user-attachments/assets/1d0ee87a-e0a5-4bfa-a9b9-2f9144cb905b
 ## Features
 
 - **7 LLM-callable tools** — `TaskCreate`, `TaskList`, `TaskGet`, `TaskUpdate`, `TaskOutput`, `TaskStop`, `TaskExecute` — following Claude Code's tool specs, with `TaskCreate` taking a whole list in one call
-- **Persistent widget** — live task list above the editor with `✔`/`◼`/`◻` status marks, task numbers (`#1`, `#2`, …), strikethrough for completed tasks, star spinner (`✳✽`) for active tasks with elapsed time and token counts. Every glyph is [configurable](CUSTOMIZING.md#task-glyphs)
+- **Persistent widget** — by default one summary line on the editor's border (`● 2/5 · ✳ #3 Doing it… (2m 10s)`); or, with `layout: "list"`, a live task list above the editor with `✔`/`◼`/`◻` status marks, task numbers (`#1`, `#2`, …), strikethrough for completed tasks, star spinner (`✳✽`) for active tasks with elapsed time and token counts. Every glyph is [configurable](CUSTOMIZING.md#task-glyphs)
 - **System-reminder injection** — periodic `<system-reminder>` nudges injected into the upcoming LLM request (via the `context` hook, transient and never persisted) when task tools haven't been used recently, or when a task is left stuck `in_progress` after a text-only turn. Shaped after Claude Code's todo reminders — an empty-list nudge or a JSON echo of the current list (capped at 10 tasks)
 - **Prompt guidelines** — workflow contract encoded in tool descriptions, nudging the LLM at the point of tool use
 - **Dependency management** — bidirectional `blocks`/`blockedBy` relationships with warnings for cycles, self-deps, and dangling references
@@ -36,7 +36,13 @@ pi -e ./src/index.ts
 
 ## Widget
 
-The extension renders a persistent widget above the editor:
+By default the extension draws one summary line on the editor's bottom border: progress, then the task being worked on, using no extra lines.
+
+```
+── ● 2/5 · ✳ #3 Acquiring plutonium… (2m 49s) ──────────
+```
+
+With `layout: "list"` it renders a persistent widget above the editor instead:
 
 ```
 ● 4 tasks (1 done, 1 in progress, 2 open)
@@ -57,13 +63,14 @@ The elapsed time counts the time a task was actually worked on: it stops when th
 
 ### Widget display settings
 
-How tasks are sorted and how many are shown can be configured via `/tasks` → Settings (saved as project overrides in `.pi/tasks-config.json`), except `glyphs`, which is set in the config file directly. All defaults preserve the original behaviour.
+How tasks are sorted and how many are shown can be configured via `/tasks` → Settings (saved as project overrides in `.pi/tasks-config.json`), except `glyphs`, which is set in the config file directly.
 
 > **[→ Customizing the task widget](CUSTOMIZING.md)** — the full guide: global vs. project config, sort presets, writing your own sort order, and recipes.
 
 | Setting | Values | Default | Behaviour |
 |---------|--------|---------|-----------|
 | `sortOrder` | `id` / `status` / `active` / `recent` / `oldest`, or a [sort spec](CUSTOMIZING.md#writing-your-own-sort-order) | `id` | `id` = creation order; `status` groups completed → in-progress → pending; `active` is the reverse grouping (in-progress → pending → completed); `recent`/`oldest` = by last-updated time |
+| `layout` | `compact` / `list` | `compact` | `compact` draws one summary line (`● 2/5 · ✳ #3 Doing it… (2m 10s)`) on the editor's bottom border, using no extra lines. `list` draws every task above the editor; the display settings below apply to it only. `compact` needs pi's default editor; if another extension replaced it, the list is shown |
 | `collapseCompleted` | `true` / `false` | `false` | When `true`, completed tasks are replaced by a single `✔ N completed` line at the bottom |
 | `maxVisible` | `5`–`100` | `10` | Caps how many task lines the widget shows (ignored when `showAll` is on) |
 | `showAll` | `true` / `false` | `false` | When `true`, every listed task is shown regardless of `maxVisible` |
@@ -309,7 +316,7 @@ Both auto-clear modes use a turn-based delay for non-jarring UX — tasks linger
 
 In either mode, a list with nothing left to do is also retired when a *later* batch of work begins, however long it has been sitting there. The turn delay only runs while the conversation does, so a list completed just before the agent stopped would otherwise still be on screen when the next task arrived, and that task would join it. The finished list stays visible while you read it and through any follow-up question, and goes when the agent starts new work. Tasks the agent adds to a list it is still working through are unaffected, and task IDs stay monotonic and are never reused.
 
-Settings (`taskScope`, `autoCascade`, `autoClearCompleted`, plus the [widget display settings](#widget-display-settings) `sortOrder` / `collapseCompleted` / `maxVisible` / `showAll` / `hiddenAt`) changed through `/tasks` are saved as project overrides in `<workspace>/.pi/tasks-config.json`. `glyphs` is config-file only — see [CUSTOMIZING.md](CUSTOMIZING.md#task-glyphs).
+Settings (`taskScope`, `autoCascade`, `autoClearCompleted`, plus the [widget display settings](#widget-display-settings) `layout` / `sortOrder` / `collapseCompleted` / `maxVisible` / `showAll` / `hiddenAt`) changed through `/tasks` are saved as project overrides in `<workspace>/.pi/tasks-config.json`. `glyphs` is config-file only — see [CUSTOMIZING.md](CUSTOMIZING.md#task-glyphs).
 
 ### Global defaults
 

@@ -101,10 +101,15 @@ describe("TaskCreate — batch", () => {
       .toBe("Task #1 created successfully: Just one");
   });
 
+  it("defaults a missing description to the subject", async () => {
+    // A model that only sees the signature sends a bare subject; failing it costs a retry.
+    expect(await create({ subject: "Bare" })).toBe("Task #1 created successfully: Bare");
+  });
+
   it("reports an empty `tasks` instead of silently creating nothing", async () => {
     // A model that builds the array dynamically can arrive here with nothing in
     // it. Answering "created successfully" to that would be a lie it then acts on.
-    expect(await create({ tasks: [] })).toContain("needs a subject and a description");
+    expect(await create({ tasks: [] })).toContain("needs a subject");
     expect(await list()).toBe("No tasks found");
   });
 
@@ -114,11 +119,11 @@ describe("TaskCreate — batch", () => {
     const result = await create({
       tasks: [
         { subject: "Fine", description: "d" },
-        { subject: "Missing a description" },
+        { description: "Missing a subject" },
       ] as unknown,
     });
 
-    expect(result).toContain("needs a subject and a description");
+    expect(result).toContain("needs a subject");
     expect(await list()).toBe("No tasks found");
   });
 });

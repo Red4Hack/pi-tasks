@@ -260,6 +260,15 @@ export default function (pi: ExtensionAPI) {
   checkSubagentsVersion();
   pi.events.on("subagents:ready", () => checkSubagentsVersion());
 
+  /** Resolve a task ID, or an agent ID (or unique-ish prefix) mapped to a task, to a task ID. */
+  function resolveTaskId(id: string): string {
+    if (store.get(id)) return id;
+    for (const [agentId, taskId] of agentTaskMap) {
+      if (agentId === id || agentId.startsWith(id)) return taskId;
+    }
+    return id;
+  }
+
   /** Build a prompt for a task being executed by a subagent.
    *  Injects completed dependency results so cascaded agents have context from prerequisites.
    */
@@ -514,7 +523,7 @@ export default function (pi: ExtensionAPI) {
     // text-only turn (no tool calls, so tool_result never fires) but left tasks
     // in_progress. Cheap-first: only read the store once the turn gap could
     // matter — the in_progress interval is the smallest a reminder can need.
-    if (!cadence.reminderInjectedThisCycle && !cadence.reminderDue) {
+    if (!cadence.reminderDue) {
       const gap = cadence.currentTurn - cadence.lastTaskToolUseTurn;
       if (gap >= ACTIVE_REMINDER_INTERVAL && store.list().some(t => t.status === "in_progress")) {
         cadence.reminderDue = true;
@@ -540,7 +549,6 @@ export default function (pi: ExtensionAPI) {
       return {};
     }
 
-    if (cadence.reminderInjectedThisCycle) return {};
     // Cheap-first: avoid store.list() disk I/O until the turn gap could matter.
     // ACTIVE_REMINDER_INTERVAL is the smallest interval any reminder can need.
     if (cadence.currentTurn - cadence.lastTaskToolUseTurn < ACTIVE_REMINDER_INTERVAL) return {};
@@ -668,7 +676,7 @@ Skip it for a single straightforward step or a purely conversational request; ju
 ## Fields
 
 - **subject**: short imperative title ("Fix authentication bug in login flow")
-- **description**: what to do, with enough context and acceptance criteria for another agent to pick it up
+- **description** (optional): what to do, with enough context and acceptance criteria for another agent to pick it up; defaults to the subject
 - **activeForm** (optional): present continuous shown while the task runs ("Fixing authentication bug"); defaults to the subject
 - **agentType** (optional): marks the task for subagent execution via TaskExecute ("general-purpose", "Explore")
 
@@ -676,19 +684,19 @@ Tasks start \`pending\`. Check TaskList first to avoid duplicates, and use TaskU
     promptGuidelines: [
       "When working on complex multi-step tasks, use TaskCreate to track progress and TaskUpdate to update status.",
       "Batch instead of repeating a call: TaskCreate takes `tasks`, TaskUpdate takes `updates` (e.g. complete one task and start the next), TaskGet takes `taskIds`.",
-      "Mark tasks as in_progress before starting work and completed when done.",
+      "ALWAYS set a task to in_progress with TaskUpdate BEFORE you start working on it (the UI shows progress only for in_progress tasks), and to completed as soon as it is done. Never work on a task that is still pending.",
       "Use TaskList to check for available work after completing a task.",
     ],
     parameters: Type.Object({
       subject: Type.Optional(Type.String({ description: "A brief title for the task. Omit when using `tasks`." })),
-      description: Type.Optional(Type.String({ description: "A detailed description of what needs to be done. Omit when using `tasks`." })),
+      description: Type.Optional(Type.String({ description: "A detailed description of what needs to be done; defaults to the subject. Omit when using `tasks`." })),
       activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress (e.g., 'Running tests')" })),
       agentType: Type.Optional(Type.String({ description: "Agent type for subagent execution (e.g., 'general-purpose', 'Explore'). Tasks with agentType can be started via TaskExecute." })),
       metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Arbitrary metadata to attach to the task" })),
       tasks: Type.Optional(Type.Array(
         Type.Object({
           subject: Type.String({ description: "A brief title for the task" }),
-          description: Type.String({ description: "A detailed description of what needs to be done" }),
+          description: Type.Optional(Type.String({ description: "A detailed description of what needs to be done; defaults to the subject" })),
           activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress" })),
           agentType: Type.Optional(Type.String({ description: "Agent type for subagent execution via TaskExecute" })),
           metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Arbitrary metadata to attach to the task" })),
@@ -704,13 +712,14 @@ Tasks start \`pending\`. Check TaskList first to avoid duplicates, and use TaskU
       const requested = params.tasks?.length ? params.tasks : [params];
       const specs: NewTask[] = [];
       for (const spec of requested) {
-        if (!spec.subject || !spec.description) {
-          return Promise.resolve(textResult("TaskCreate needs a subject and a description — pass them directly, or a `tasks` array of them."));
+        // The schema cannot say "subject, unless tasks", so a model that only sees the signature sends a bare subject: accept it.
+        if (!spec.subject) {
+          return Promise.resolve(textResult("TaskCreate needs a subject — pass it directly, or a `tasks` array of them."));
         }
         const metadata = { ...spec.metadata, ...(spec.agentType ? { agentType: spec.agentType } : {}) };
         specs.push({
           subject: spec.subject,
-          description: spec.description,
+          description: spec.description || spec.subject,
           activeForm: spec.activeForm,
           metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
         });
@@ -929,12 +938,12 @@ Read the task with TaskGet first when you are unsure of its current state.`,
 - Works with all task types: background shells, async agents, and remote sessions`,
     parameters: Type.Object({
       task_id: Type.String({ description: "The task ID to get output from" }),
-      block: Type.Boolean({ description: "Whether to wait for completion", default: true }),
-      timeout: Type.Number({ description: "Max wait time in ms", default: 30000, minimum: 0, maximum: 600000 }),
+      block: Type.Optional(Type.Boolean({ description: "Whether to wait for completion", default: true })),
+      timeout: Type.Optional(Type.Number({ description: "Max wait time in ms", default: 30000, minimum: 0, maximum: 600000 })),
     }),
 
     async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
-      const { task_id, block, timeout } = params;
+      const { task_id, block = true, timeout = 30000 } = params;
       // Reject an empty id up front: every agent ID starts with "", so the prefix
       // match below would resolve it to whichever agent the map yields first.
       if (!task_id) throw new Error("task_id is required");
@@ -943,13 +952,7 @@ Read the task with TaskGet first when you are unsure of its current state.`,
       if (!processOutput) {
         // No shell process — check if this is a subagent task
         // Support both task IDs and agent IDs (resolve agent ID → task ID)
-        let resolvedId = task_id;
-        if (!store.get(resolvedId)) {
-          // Check if this is an agent ID mapped to a task
-          for (const [agentId, taskId] of agentTaskMap) {
-            if (agentId === task_id || agentId.startsWith(task_id)) { resolvedId = taskId; break; }
-          }
-        }
+        const resolvedId = resolveTaskId(task_id);
         const task = store.get(resolvedId);
         if (!task) throw new Error(`No task found with ID ${task_id}`);
 
@@ -957,6 +960,7 @@ Read the task with TaskGet first when you are unsure of its current state.`,
           // Subagent task — wait for completion if blocking
           if (block && task.status === "in_progress") {
             await new Promise<void>((resolve) => {
+              if (signal?.aborted) return resolve();
               const timer = setTimeout(() => { unsubOk(); unsubFail(); resolve(); }, timeout ?? 30000);
               const cleanup = () => { clearTimeout(timer); resolve(); };
               const unsubOk = pi.events.on("subagents:completed", (d: unknown) => {
@@ -1032,14 +1036,12 @@ Read the task with TaskGet first when you are unsure of its current state.`,
       if (!stopped) {
         // No shell process — check if this is a subagent task
         // Support both task IDs and agent IDs
-        let resolvedId = taskId;
-        if (!store.get(resolvedId)) {
-          for (const [agentId, tId] of agentTaskMap) {
-            if (agentId === taskId || agentId.startsWith(taskId)) { resolvedId = tId; break; }
-          }
-        }
+        const resolvedId = resolveTaskId(taskId);
         const task = store.get(resolvedId);
         if (task?.metadata?.agentId && task.status === "in_progress") {
+          // Unlink first: a late completed/failed event for this agent must not
+          // re-process a task the user already stopped.
+          agentTaskMap.delete(task.metadata.agentId);
           store.update(resolvedId, { status: "completed" });
           autoClear.trackCompletion(resolvedId, cadence.currentTurn);
           await stopSubagent(task.metadata.agentId);
@@ -1047,7 +1049,11 @@ Read the task with TaskGet first when you are unsure of its current state.`,
           widget.update();
           return textResult(`Task #${resolvedId} stopped successfully`);
         }
-        throw new Error(`No running background process for task ${taskId}`);
+        throw new Error(
+          task?.status === "in_progress"
+            ? `Task #${resolvedId} is in_progress but has no background process or agent to stop — use TaskUpdate to change its status`
+            : `No running background process for task ${taskId}`,
+        );
       }
 
       store.update(taskId, { status: "completed" });

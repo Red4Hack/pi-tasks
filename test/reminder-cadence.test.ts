@@ -70,21 +70,21 @@ describe("reminder cadence (pure)", () => {
     const decision = evaluateToolResult(state, "TaskCreate", true, config);
     expect(decision.markDue).toBe(false);
     expect(state.reminderDue).toBe(false);
-    expect(state.reminderInjectedThisCycle).toBe(false);
     expect(state.lastTaskToolUseTurn).toBe(state.currentTurn);
   });
 
-  it("does not re-fire within the same injection cycle", () => {
+  it("re-fires only after another full interval once drained", () => {
     advanceTurns(5);
     evaluateToolResult(state, "read", true, config);
     expect(drainReminderForContext(state)).toBe(true);
 
-    // Reminder injected this cycle — further non-task tool results should
-    // not re-queue it until a task tool usage resets cadence.
-    advanceTurns(10);
-    const decision = evaluateToolResult(state, "bash", true, config);
-    expect(decision.markDue).toBe(false);
-    expect(state.reminderDue).toBe(false);
+    // Draining restarts the interval: no immediate re-queue...
+    advanceTurns(2);
+    expect(evaluateToolResult(state, "bash", true, config).markDue).toBe(false);
+
+    // ...but an ignored reminder comes back once the interval elapses again.
+    advanceTurns(3);
+    expect(evaluateToolResult(state, "bash", true, config).markDue).toBe(true);
   });
 
   it("re-arms after a task tool usage resets the cycle", () => {
@@ -94,7 +94,6 @@ describe("reminder cadence (pure)", () => {
 
     // Use a task tool to reset.
     evaluateToolResult(state, "TaskUpdate", true, config);
-    expect(state.reminderInjectedThisCycle).toBe(false);
 
     // Wait the interval again, expect a fresh reminder.
     advanceTurns(5);
@@ -119,7 +118,6 @@ describe("reminder cadence (pure)", () => {
     expect(state).toEqual({
       currentTurn: 0,
       lastTaskToolUseTurn: 0,
-      reminderInjectedThisCycle: false,
       reminderDue: false,
     });
   });

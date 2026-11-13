@@ -10,7 +10,6 @@
 export interface CadenceState {
   currentTurn: number;
   lastTaskToolUseTurn: number;
-  reminderInjectedThisCycle: boolean;
   reminderDue: boolean;
 }
 
@@ -25,7 +24,6 @@ export function createCadenceState(): CadenceState {
   return {
     currentTurn: 0,
     lastTaskToolUseTurn: 0,
-    reminderInjectedThisCycle: false,
     reminderDue: false,
   };
 }
@@ -33,7 +31,6 @@ export function createCadenceState(): CadenceState {
 export function resetCadenceState(state: CadenceState): void {
   state.currentTurn = 0;
   state.lastTaskToolUseTurn = 0;
-  state.reminderInjectedThisCycle = false;
   state.reminderDue = false;
 }
 
@@ -61,8 +58,7 @@ export function evaluateToolResult(
   // Task tool usage resets cadence and clears any pending reminder.
   if (config.taskToolNames.has(toolName)) {
     state.lastTaskToolUseTurn = state.currentTurn;
-    state.reminderInjectedThisCycle = false;
-    state.reminderDue = false;
+      state.reminderDue = false;
     return { markDue: false };
   }
 
@@ -70,7 +66,6 @@ export function evaluateToolResult(
   if (state.currentTurn - state.lastTaskToolUseTurn < config.reminderInterval) {
     return { markDue: false };
   }
-  if (state.reminderInjectedThisCycle) return { markDue: false };
   if (!hasTasks) return { markDue: false };
 
   state.reminderDue = true;
@@ -78,13 +73,12 @@ export function evaluateToolResult(
 }
 
 /**
- * Drain the pending reminder when `context` fires. Returns true if the
+ * Drain the pending reminder when `context` fires. Draining restarts the interval, so a reminder the model ignores comes back after another interval instead of never. Returns true if the
  * caller should inject the reminder into the upcoming LLM call's messages.
  */
 export function drainReminderForContext(state: CadenceState): boolean {
   if (!state.reminderDue) return false;
   state.reminderDue = false;
-  state.reminderInjectedThisCycle = true;
   state.lastTaskToolUseTurn = state.currentTurn;
   return true;
 }
